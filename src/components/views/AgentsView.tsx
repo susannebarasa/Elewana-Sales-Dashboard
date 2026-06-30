@@ -1,5 +1,9 @@
 'use client'
 import {
+  Box, Grid, Card, CardContent, Typography,
+  Table, TableHead, TableBody, TableRow, TableCell, Chip,
+} from '@mui/material'
+import {
   Chart as ChartJS, CategoryScale, LinearScale,
   PointElement, LineElement, BarElement, Tooltip,
 } from 'chart.js'
@@ -42,54 +46,72 @@ export default function AgentsView({ data, filters }: Props) {
   }
 
   return (
-    <div className="fu">
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       <KpiRow metrics={[kp.active, kp.arev, kp.nradr, kp.radr]} />
 
-      <div className="g2">
-        <div className="cc">
-          <div className="cc-t">Agent Revenue by Month</div>
-          <div className="cc-s">{filters.year} vs LY — agent-linked bookings</div>
-          <div className="ca"><Line data={byMonthData} options={CHART_OPTS} /></div>
-        </div>
-        <div className="cc">
-          <div className="cc-t">Revenue by Property</div>
-          <div className="cc-s">{filters.year} vs LY — top 10 properties</div>
-          <div className="ca">
-            <Bar data={byPropData} options={{ ...CHART_OPTS, scales: { ...CHART_OPTS.scales, x: { ...CHART_OPTS.scales.x, stacked: false }, y: { ...CHART_OPTS.scales.y, stacked: false } } }} />
-          </div>
-        </div>
-      </div>
+      <Grid container spacing={1.5}>
+        <Grid size={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Agent Revenue by Month</Typography>
+              <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>{filters.year} vs LY — agent-linked bookings</Typography>
+              <Box sx={{ height: 200, position: 'relative' }}>
+                <Line data={byMonthData} options={CHART_OPTS} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Revenue by Property</Typography>
+              <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>{filters.year} vs LY — top 10 properties</Typography>
+              <Box sx={{ height: 200, position: 'relative' }}>
+                <Bar data={byPropData} options={CHART_OPTS} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
 
-      <div className="cc" style={{ marginTop: 14 }}>
-        <div className="cc-t">Top Trade Partners</div>
-        <div className="cc-s">YTD {filters.year} — ranked by revenue</div>
-        <div style={{ overflowX: 'auto', marginTop: 10 }}>
-          <table className="mt">
-            <thead>
-              <tr>
-                <th style={{ textAlign: 'left' }}>Agent</th>
-                <th>Revenue ($k)</th>
-                <th>Nights</th>
-                <th>ADR</th>
-                <th>Channel</th>
-                <th>YoY</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.AD.yearly.slice(0, 10).map((r) => (
-                <tr key={r.nm}>
-                  <td style={{ textAlign: 'left', fontWeight: 500 }}>{r.nm}</td>
-                  <td>{r.rv.toLocaleString()}</td>
-                  <td>{r.nt.toLocaleString()}</td>
-                  <td>${r.nr_adr.toLocaleString()}</td>
-                  <td>{r.ch}</td>
-                  <td className={r.up ? 'cg-up' : 'cg-dn'}>{r.cg}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+      <Card>
+        <CardContent>
+          <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Top Trade Partners</Typography>
+          <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>YTD {filters.year} — ranked by revenue</Typography>
+          <Box sx={{ overflowX: 'auto' }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ textAlign: 'left' }}>Agent</TableCell>
+                  <TableCell align="right">Revenue ($k)</TableCell>
+                  <TableCell align="right">Nights</TableCell>
+                  <TableCell align="right">ADR</TableCell>
+                  <TableCell align="right">YoY</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {data.AD.yearly.slice(0, 10).map((r) => (
+                  <TableRow key={r.nm} sx={{ '&:last-child td': { border: 0 } }}>
+                    <TableCell sx={{ fontFamily: 'Inter, sans-serif', fontWeight: 500, color: 'text.primary', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.nm}
+                    </TableCell>
+                    <TableCell align="right">${r.rv.toLocaleString()}k</TableCell>
+                    <TableCell align="right">{r.nt.toLocaleString()}</TableCell>
+                    <TableCell align="right">${r.nr_adr.toLocaleString()}</TableCell>
+                    <TableCell align="right">
+                      <Chip
+                        label={r.cg}
+                        size="small"
+                        sx={{ bgcolor: r.up ? '#EAF3DE' : '#FEF2F2', color: r.up ? '#27500A' : '#C0392B', height: 18, fontSize: '0.6rem' }}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        </CardContent>
+      </Card>
+    </Box>
   )
 }

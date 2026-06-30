@@ -1,3 +1,9 @@
+'use client'
+import Card from '@mui/material/Card'
+import CardContent from '@mui/material/CardContent'
+import Typography from '@mui/material/Typography'
+import Box from '@mui/material/Box'
+import Grid from '@mui/material/Grid'
 import type { KpiMetric } from '@/types'
 
 function fmtK(v: number, fmt: string): string {
@@ -11,10 +17,10 @@ function fmtK(v: number, fmt: string): string {
   return String(v)
 }
 
-function rag(m: KpiMetric, sv: number): 'g' | 'a' | 'r' {
+function rag(m: KpiMetric, sv: number): 'green' | 'amber' | 'red' {
   const good = m.inv ? sv <= m.thG : sv >= m.thG
   const ok   = m.inv ? sv <= m.thY : sv >= m.thY
-  return good ? 'g' : ok ? 'a' : 'r'
+  return good ? 'green' : ok ? 'amber' : 'red'
 }
 
 type Props = {
@@ -25,7 +31,7 @@ type Props = {
 
 export default function KpiRow({ metrics, propMult = 1, periodMult = 1 }: Props) {
   return (
-    <div className="kpi-row">
+    <Grid container spacing={1.5} sx={{ mb: 1.5 }}>
       {metrics.map((m) => {
         const isRate = m.fmt === 'pct' || m.fmt === 'f1' || m.fmt === 'days'
         const isADR  = m.fmt === '$'
@@ -36,19 +42,33 @@ export default function KpiRow({ metrics, propMult = 1, periodMult = 1 }: Props)
         const r   = rag(m, sv)
         const chg = ((sv - lv) / lv) * 100
         const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(1) + '%'
-        const ragClass = r === 'g' ? 'kg' : r === 'a' ? 'ka' : 'kr'
-        const ragColor = r === 'g' ? 'var(--rg)' : r === 'r' ? 'var(--rr)' : '#854D0E'
+
+        const borderColor = r === 'green' ? 'success.main' : r === 'red' ? 'error.main' : 'warning.main'
+        const bgColor     = r === 'green' ? '#F2F8EE'       : r === 'red' ? '#FEF2F2'    : '#FDF8EE'
+        const chgColor    = r === 'green' ? 'success.main'  : r === 'red' ? 'error.main' : 'warning.main'
+
         return (
-          <div key={m.lbl} className={`kpi ${ragClass}`}>
-            <div className="kpi-l">{m.lbl}</div>
-            <div className="kpi-v">{fmtK(sv, m.fmt)}</div>
-            <div className="kpi-d">
-              {m.d} &middot; <b style={{ color: ragColor }}>{chgStr}</b>
-            </div>
-            <div className="kpi-st" />
-          </div>
+          <Grid size={3} key={m.lbl}>
+            <Card sx={{ border: '0.5px solid', borderColor, bgcolor: bgColor, borderRadius: 1.5, height: '100%' }}>
+              <CardContent>
+                <Typography variant="overline" sx={{ display: 'block' }}>{m.lbl}</Typography>
+                <Typography
+                  variant="h4"
+                  sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontSize: 34, lineHeight: 1, color: 'text.primary', my: 0.5 }}
+                >
+                  {fmtK(sv, m.fmt)}
+                </Typography>
+                <Typography variant="caption">
+                  {m.d} ·{' '}
+                  <Box component="span" sx={{ fontWeight: 700, color: chgColor }}>
+                    {chgStr}
+                  </Box>
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
         )
       })}
-    </div>
+    </Grid>
   )
 }

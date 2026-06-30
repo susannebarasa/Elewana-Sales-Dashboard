@@ -1,5 +1,8 @@
 'use client'
 import {
+  Box, Grid, Card, CardContent, Typography, Alert, LinearProgress,
+} from '@mui/material'
+import {
   Chart as ChartJS, CategoryScale, LinearScale,
   PointElement, LineElement, BarElement, Tooltip,
 } from 'chart.js'
@@ -29,7 +32,7 @@ export default function OccView({ data, filters }: Props) {
     labels: data.OD.props.map((p) => p.nm),
     datasets: [{
       data: data.OD.props.map((p) => p.ar),
-      backgroundColor: 'rgba(74,90,58,0.7)',
+      backgroundColor: 'rgba(183,99,42,0.7)',
       borderRadius: 3,
     }],
   }
@@ -43,47 +46,70 @@ export default function OccView({ data, filters }: Props) {
   }
 
   return (
-    <div className="fu">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, padding: '8px 12px', background: 'var(--ocl)', border: '0.5px solid var(--oc)', borderRadius: 6 }}>
-        <span style={{ fontSize: 11, color: 'var(--ocd)' }}>ℹ</span>
-        <span style={{ fontSize: 11, color: 'var(--ocd)' }}>
-          Room nights &amp; rate data sourced from <strong>ResRequest</strong>. Occupancy %, RevPAR &amp; budget comparisons available in the <strong>MIS view</strong>.
-        </span>
-      </div>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      <Alert
+        severity="info"
+        sx={{
+          bgcolor: '#FAEEDA', color: '#854F0B',
+          border: '0.5px solid #B7632A',
+          '& .MuiAlert-icon': { color: '#B7632A' },
+          py: 0.5, fontSize: '0.75rem',
+        }}
+      >
+        Room night &amp; rate data sourced from ResRequest PMS itinerary records.
+      </Alert>
 
       <KpiRow metrics={[kp.nights, kp.adr, kp.rev, kp.cancel]} />
 
-      <div className="g2">
-        <div className="cc">
-          <div className="cc-t">Revenue by Property</div>
-          <div className="cc-s">ADR from ResRequest bookings — last 90 days</div>
-          <div className="ca">
-            <Bar data={revByPropData} options={{ ...CHART_OPTS, indexAxis: 'y' as const }} />
-          </div>
-        </div>
-        <div className="cc">
-          <div className="cc-t">Arrival Revenue Trend</div>
-          <div className="cc-s">{filters.year} vs LY — itinerary gross revenue</div>
-          <div className="ca"><Line data={arrTrendData} options={CHART_OPTS} /></div>
-        </div>
-      </div>
+      <Grid container spacing={1.5}>
+        <Grid size={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Revenue by Property</Typography>
+              <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>ADR from ResRequest bookings — last 90 days</Typography>
+              <Box sx={{ height: 200, position: 'relative' }}>
+                <Bar data={revByPropData} options={{ ...CHART_OPTS, indexAxis: 'y' as const }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Arrival Revenue Trend</Typography>
+              <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>{filters.year} vs LY — itinerary gross revenue</Typography>
+              <Box sx={{ height: 200, position: 'relative' }}>
+                <Line data={arrTrendData} options={CHART_OPTS} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
 
-      <div className="cc" style={{ marginTop: 14 }}>
-        <div className="cc-t">Occupancy by Property</div>
-        <div className="cc-s">Relative bookings — last 90 days</div>
-        <div style={{ marginTop: 10 }}>
+      <Card>
+        <CardContent>
+          <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Occupancy by Property</Typography>
+          <Typography variant="caption" sx={{ display: 'block', mb: 1.5 }}>Relative bookings — last 90 days · ADR</Typography>
           {data.OD.props.map((p) => (
-            <div key={p.nm} className="oc-row">
-              <div className="oc-nm">{p.nm}</div>
-              <div className="oc-track">
-                <div className="oc-fill" style={{ width: `${p.oc}%` }} />
-              </div>
-              <div className="oc-pct">{p.oc}%</div>
-              <div className="oc-adr">${p.ar.toLocaleString()}</div>
-            </div>
+            <Box key={p.nm} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
+              <Typography sx={{ fontSize: 11, color: 'text.primary', minWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {p.nm}
+              </Typography>
+              <LinearProgress
+                variant="determinate"
+                value={p.oc}
+                sx={{ flex: 1, height: 8, borderRadius: 1, bgcolor: '#F5F0E8', '& .MuiLinearProgress-bar': { bgcolor: '#B7632A' } }}
+              />
+              <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'text.secondary', minWidth: 32, textAlign: 'right' }}>
+                {p.oc}%
+              </Typography>
+              <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'text.primary', minWidth: 60, textAlign: 'right' }}>
+                ${p.ar.toLocaleString()}
+              </Typography>
+            </Box>
           ))}
-        </div>
-      </div>
-    </div>
+        </CardContent>
+      </Card>
+    </Box>
   )
 }

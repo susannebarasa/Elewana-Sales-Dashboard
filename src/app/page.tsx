@@ -1,5 +1,8 @@
 'use client'
 import { useState, useEffect } from 'react'
+import Box from '@mui/material/Box'
+import CircularProgress from '@mui/material/CircularProgress'
+import Alert from '@mui/material/Alert'
 import type { DashboardData } from '@/types'
 import Sidebar from '@/components/Sidebar'
 import Topbar from '@/components/Topbar'
@@ -44,28 +47,40 @@ export default function Page() {
   }, [])
 
   const renderContent = () => {
-    if (loading) return <div className="loading">Loading dashboard data…</div>
-    if (error)   return <div className="err">Error: {error}</div>
-    if (!data)   return <div className="loading">No data</div>
+    if (loading) {
+      return (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200 }}>
+          <CircularProgress size={28} sx={{ color: 'primary.main' }} />
+        </Box>
+      )
+    }
+    if (error) {
+      return <Alert severity="error" sx={{ mt: 2 }}>Failed to load dashboard data: {error}</Alert>
+    }
+    if (!data) return null
 
     if (view !== 'sales') {
-      return <div className="loading" style={{ color: 'var(--mu)' }}>{view} — coming soon</div>
+      return (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200, color: 'text.secondary', fontSize: 13 }}>
+          {view} — coming soon
+        </Box>
+      )
     }
 
     switch (sub) {
-      case 'pace':   return <PaceView data={data} filters={filters} />
-      case 'occ':    return <OccView data={data} filters={filters} />
-      case 'tp':     return <AgentsView data={data} filters={filters} />
-      case 'pl':     return <PipelineView data={data} filters={filters} />
-      case 'cn':     return <ConsultView data={data} filters={filters} />
-      default:       return <PaceView data={data} filters={filters} />
+      case 'pace': return <PaceView data={data} filters={filters} />
+      case 'occ':  return <OccView data={data} filters={filters} />
+      case 'tp':   return <AgentsView data={data} filters={filters} />
+      case 'pl':   return <PipelineView data={data} filters={filters} />
+      case 'cn':   return <ConsultView data={data} filters={filters} />
+      default:     return <PaceView data={data} filters={filters} />
     }
   }
 
   return (
-    <div className="app">
+    <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden', bgcolor: 'background.default' }}>
       <Sidebar view={view} onView={(v) => { setView(v); setSub('pace') }} />
-      <div className="main">
+      <Box component="main" sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
         <Topbar
           view={view}
           sub={sub}
@@ -74,8 +89,10 @@ export default function Page() {
           onFilters={setFilters}
           lastUpdated={data?.lastUpdated ?? ''}
         />
-        <div className="content">{renderContent()}</div>
-      </div>
-    </div>
+        <Box sx={{ flex: 1, overflowY: 'auto', p: '18px 20px' }}>
+          {renderContent()}
+        </Box>
+      </Box>
+    </Box>
   )
 }
