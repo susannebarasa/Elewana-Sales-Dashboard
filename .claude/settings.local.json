@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Start-Sleep -Seconds 4; Invoke-WebRequest -Uri \"http://localhost:5000/health\" -UseBasicParsing | Select-Object -ExpandProperty Content)",
+      "PowerShell(Start-Sleep -Seconds 5; Invoke-WebRequest -Uri \"http://localhost:5000/health\" -UseBasicParsing | Select-Object -ExpandProperty Content)"
+    ]
+  }
+}
