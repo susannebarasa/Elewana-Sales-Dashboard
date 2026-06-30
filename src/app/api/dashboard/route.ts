@@ -3,6 +3,12 @@ export const dynamic = 'force-dynamic'
 import { NextResponse } from 'next/server'
 import { query, queryOne } from '@/lib/db'
 import type { DashboardData } from '@/types'
+import {
+  NON_REVENUE_RATE_TYPE_IDS,
+  EXCLUDED_AGENT_IDS,
+  EXCLUDED_AGENT_NAMES_EXACT,
+  EXCLUDED_AGENT_NAME_PATTERN,
+} from '@/lib/constants'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const n = (v: unknown, def = 0): number => {
@@ -32,6 +38,12 @@ export async function GET(): Promise<NextResponse> {
     const cm = today.getMonth() + 1
     const todayStr = today.toISOString().slice(0, 10)
 
+    // Build exclusion arrays once — mysql2 expands array params into IN(?,?,...) automatically
+    const NON_REV_IDS = Array.from(NON_REVENUE_RATE_TYPE_IDS)
+    const EX_AGENT_IDS = Array.from(EXCLUDED_AGENT_IDS)
+    const EX_AGENT_NAMES = Array.from(EXCLUDED_AGENT_NAMES_EXACT)
+    const AGENT_NAME_LIKE = EXCLUDED_AGENT_NAME_PATTERN // '%direct%'
+
     // Run independent query groups in parallel
     const [
       pdRows,
@@ -58,33 +70,45 @@ export async function GET(): Promise<NextResponse> {
       kpiConsult,
       kpiLyBkgs,
     ] = await Promise.all([
-      // PD — monthly booking intake YTD
+      // PD — monthly booking intake YTD (reservations only — no itinerary join needed)
       query<{ m: number; mn: string; actual: number; ly_val: number }>(
         `SELECT MONTH(date_created) AS m, LEFT(MONTHNAME(date_created),3) AS mn,
           SUM(CASE WHEN YEAR(date_created)=? THEN IFNULL(total_amount,0) ELSE 0 END)/1000 AS actual,
           SUM(CASE WHEN YEAR(date_created)=? THEN IFNULL(total_amount,0) ELSE 0 END)/1000 AS ly_val
         FROM reservations
-        WHERE status IN ('20','30','90') AND YEAR(date_created) IN (?,?)
+        WHERE status IN ('20','30') AND YEAR(date_created) IN (?,?)
           AND MONTH(date_created) <= ?
+          AND rate_type NOT IN (?)
         GROUP BY MONTH(date_created), LEFT(MONTHNAME(date_created),3) ORDER BY m`,
-        [cy, ly, cy, ly, cm]
+        [cy, ly, cy, ly, cm, NON_REV_IDS]
       ),
 
-      // PF — forward pipeline next 4 months
+      // PF — forward pipeline next 4 months.
+      // FIX: inner subquery deduplicates to one row per reservation (MIN date_in as first leg),
+      // so each reservation's total_amount is counted exactly once and bucketed to its first
+      // upcoming arrival month. Previously summed r.total_amount across all itinerary rows,
+      // inflating by ~2–3x and incorrectly splitting multi-leg revenue across months.
       query<{ mo: string; yr: number; mon: number; cf: number; pv: number; cf_val: number; pv_val: number }>(
-        `SELECT DATE_FORMAT(i.date_in,'%b %Y') AS mo, YEAR(i.date_in) AS yr, MONTH(i.date_in) AS mon,
-          COUNT(CASE WHEN r.status='30' THEN 1 END)*100.0/GREATEST(COUNT(*),1) AS cf,
-          COUNT(CASE WHEN r.status='20' THEN 1 END)*100.0/GREATEST(COUNT(*),1) AS pv,
-          SUM(CASE WHEN r.status='30' THEN IFNULL(r.total_amount,0) ELSE 0 END) AS cf_val,
-          SUM(CASE WHEN r.status='20' THEN IFNULL(r.total_amount,0) ELSE 0 END) AS pv_val
-        FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE i.date_in > CURDATE() AND i.date_in <= DATE_ADD(CURDATE(), INTERVAL 5 MONTH)
-          AND r.status IN ('20','30')
-        GROUP BY YEAR(i.date_in), MONTH(i.date_in), DATE_FORMAT(i.date_in,'%b %Y')
-        ORDER BY yr, mon LIMIT 4`
+        `SELECT DATE_FORMAT(first_date_in,'%b %Y') AS mo, YEAR(first_date_in) AS yr, MONTH(first_date_in) AS mon,
+          COUNT(CASE WHEN status='30' THEN 1 END)*100.0/GREATEST(COUNT(*),1) AS cf,
+          COUNT(CASE WHEN status='20' THEN 1 END)*100.0/GREATEST(COUNT(*),1) AS pv,
+          SUM(CASE WHEN status='30' THEN IFNULL(total_amount,0) ELSE 0 END) AS cf_val,
+          SUM(CASE WHEN status='20' THEN IFNULL(total_amount,0) ELSE 0 END) AS pv_val
+        FROM (
+          SELECT r.reservation_number, r.status, r.total_amount, MIN(i.date_in) AS first_date_in
+          FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
+          WHERE r.status IN ('20','30')
+            AND i.date_in > CURDATE() AND i.date_in <= DATE_ADD(CURDATE(), INTERVAL 5 MONTH)
+            AND r.rate_type NOT IN (?)
+          GROUP BY r.reservation_number, r.status, r.total_amount
+        ) deduped
+        GROUP BY yr, mon, mo
+        ORDER BY yr, mon LIMIT 4`,
+        [NON_REV_IDS]
       ),
 
-      // OD.props — top 10 properties last 90 days
+      // OD.props — top 10 properties last 90 days (confirmed stays only, all channels)
+      // Uses i.total_gross_amount (itinerary-level) + COUNT(DISTINCT itinerary_id) — no dedup needed.
       query<{ nm: string; bkgs: number; adr: number }>(
         `SELECT COALESCE(p.name, i.property) AS nm,
           COUNT(DISTINCT i.itinerary_id) AS bkgs,
@@ -92,123 +116,177 @@ export async function GET(): Promise<NextResponse> {
         FROM itineraries i
         LEFT JOIN properties p ON i.property=p.property_id
         JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status IN ('20','30','90')
+        WHERE r.status = '30'
           AND i.date_in >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
           AND i.date_in < CURDATE() AND i.date_out > i.date_in AND i.property IS NOT NULL
-        GROUP BY i.property, COALESCE(p.name, i.property) ORDER BY bkgs DESC LIMIT 10`
+          AND r.rate_type NOT IN (?)
+        GROUP BY i.property, COALESCE(p.name, i.property) ORDER BY bkgs DESC LIMIT 10`,
+        [NON_REV_IDS]
       ),
 
-      // OD.arr — arrival revenue by month YTD
+      // OD.arr — arrival revenue by month YTD (confirmed stays only)
+      // Uses i.total_gross_amount (itinerary-level) — no dedup needed.
       query<{ m: number; mn: string; act: number; ly_val: number }>(
         `SELECT MONTH(i.date_in) AS m, LEFT(MONTHNAME(i.date_in),3) AS mn,
           SUM(CASE WHEN YEAR(i.date_in)=? THEN IFNULL(i.total_gross_amount,0) ELSE 0 END)/1000 AS act,
           SUM(CASE WHEN YEAR(i.date_in)=? THEN IFNULL(i.total_gross_amount,0) ELSE 0 END)/1000 AS ly_val
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status IN ('20','30','90') AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) <= ?
+        WHERE r.status = '30' AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) <= ?
+          AND r.rate_type NOT IN (?)
         GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3) ORDER BY m`,
-        [cy, ly, cy, ly, cm]
+        [cy, ly, cy, ly, cm, NON_REV_IDS]
       ),
 
-      // AD.yearly — top 12 agents this year
+      // AD.yearly — top 12 trade partners this year.
+      // FIX: revenue (rv_raw) comes from a reservations-only subquery (no itinerary join);
+      // nights (nt) and ADR (adr) come from a separate itinerary-join subquery.
+      // Previously joined all three tables and summed r.total_amount across itinerary rows,
+      // inflating rv_raw by avg leg count (~1.5–2.9x per agent, per the audit).
       query<{ nm: string; rv_raw: number; nt: number; adr: number }>(
-        `SELECT a.agent_name AS nm, SUM(IFNULL(r.total_amount,0)) AS rv_raw,
-          SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt,
-          ROUND(SUM(IFNULL(i.total_gross_amount,0))/GREATEST(SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)),1)) AS adr
-        FROM reservations r JOIN agents a ON r.agent_id=a.agent_id
-        JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status IN ('20','30','90') AND YEAR(r.date_created)=?
-        GROUP BY a.agent_id, a.agent_name ORDER BY rv_raw DESC LIMIT 12`,
-        [cy]
+        `SELECT a.agent_name AS nm, rv.rv_raw, lg.nt, lg.adr
+        FROM (
+          SELECT r.agent_id, SUM(IFNULL(r.total_amount,0)) AS rv_raw
+          FROM reservations r
+          WHERE r.status IN ('20','30') AND YEAR(r.date_created)=?
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+          GROUP BY r.agent_id
+        ) rv
+        JOIN (
+          SELECT r.agent_id,
+            SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt,
+            ROUND(SUM(IFNULL(i.total_gross_amount,0))/GREATEST(SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)),1)) AS adr
+          FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
+          WHERE r.status IN ('20','30') AND YEAR(r.date_created)=?
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+          GROUP BY r.agent_id
+        ) lg ON rv.agent_id=lg.agent_id
+        JOIN agents a ON rv.agent_id=a.agent_id
+        WHERE a.agent_name NOT IN (?)
+          AND LOWER(a.agent_name) NOT LIKE ?
+        ORDER BY rv_raw DESC LIMIT 12`,
+        [cy, EX_AGENT_IDS, NON_REV_IDS, cy, EX_AGENT_IDS, NON_REV_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE]
       ),
 
-      // AD.yearly LY comparison
+      // AD.yearly LY comparison — reservations + agents join only, no itinerary join.
+      // No dedup needed: one reservation = one r.total_amount in this join.
       query<{ nm: string; rv_raw: number }>(
         `SELECT a.agent_name AS nm, SUM(IFNULL(r.total_amount,0)) AS rv_raw
         FROM reservations r JOIN agents a ON r.agent_id=a.agent_id
-        WHERE r.status IN ('20','30','90') AND YEAR(r.date_created)=?
+        WHERE r.status IN ('20','30') AND YEAR(r.date_created)=?
+          AND a.agent_id NOT IN (?)
+          AND a.agent_name NOT IN (?)
+          AND LOWER(a.agent_name) NOT LIKE ?
+          AND r.rate_type NOT IN (?)
         GROUP BY a.agent_id, a.agent_name`,
-        [ly]
+        [ly, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS]
       ),
 
-      // AD.byProp
+      // AD.byProp — revenue by property for agent bookings.
+      // Uses i.total_gross_amount (itinerary-level, grouped by property) — no dedup needed.
       query<{ pr: string; rv: number; ly_val: number }>(
         `SELECT COALESCE(p.name, i.property) AS pr,
           SUM(CASE WHEN YEAR(r.date_created)=? THEN IFNULL(i.total_gross_amount,0) ELSE 0 END)/1000 AS rv,
           SUM(CASE WHEN YEAR(r.date_created)=? THEN IFNULL(i.total_gross_amount,0) ELSE 0 END)/1000 AS ly_val
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         LEFT JOIN properties p ON i.property=p.property_id
-        WHERE r.status IN ('20','30','90') AND r.agent_id IS NOT NULL AND i.property IS NOT NULL
+        WHERE r.status IN ('20','30') AND r.agent_id IS NOT NULL AND i.property IS NOT NULL
+          AND r.agent_id NOT IN (?)
+          AND r.rate_type NOT IN (?)
         GROUP BY i.property, COALESCE(p.name, i.property) ORDER BY rv DESC LIMIT 16`,
-        [cy, ly]
+        [cy, ly, EX_AGENT_IDS, NON_REV_IDS]
       ),
 
-      // AD.byMonth — agent revenue by month
+      // AD.byMonth — agent revenue by month. Reservations only — no itinerary join, no dedup needed.
       query<{ m: number; mn: string; act: number; ly_val: number }>(
         `SELECT MONTH(r.date_created) AS m, LEFT(MONTHNAME(r.date_created),3) AS mn,
           SUM(CASE WHEN YEAR(r.date_created)=? THEN IFNULL(r.total_amount,0) ELSE 0 END)/1000 AS act,
           SUM(CASE WHEN YEAR(r.date_created)=? THEN IFNULL(r.total_amount,0) ELSE 0 END)/1000 AS ly_val
         FROM reservations r
-        WHERE r.status IN ('20','30','90') AND r.agent_id IS NOT NULL
+        WHERE r.status IN ('20','30') AND r.agent_id IS NOT NULL
           AND YEAR(r.date_created) IN (?,?) AND MONTH(r.date_created) <= ?
+          AND r.agent_id NOT IN (?)
+          AND r.rate_type NOT IN (?)
         GROUP BY MONTH(r.date_created), LEFT(MONTHNAME(r.date_created),3) ORDER BY m`,
-        [cy, ly, cy, ly, cm]
+        [cy, ly, cy, ly, cm, EX_AGENT_IDS, NON_REV_IDS]
       ),
 
-      // AD.occByMonth — room nights by month
+      // AD.occByMonth — room nights by month. DATEDIFF per leg is the legitimate exception.
       query<{ m: number; mn: string; act: number; ly_val: number }>(
         `SELECT MONTH(i.date_in) AS m, LEFT(MONTHNAME(i.date_in),3) AS mn,
           SUM(CASE WHEN YEAR(i.date_in)=? THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS act,
           SUM(CASE WHEN YEAR(i.date_in)=? THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS ly_val
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status IN ('20','30','90') AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) <= ?
+        WHERE r.status IN ('20','30') AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) <= ?
+          AND r.rate_type NOT IN (?)
         GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3) ORDER BY m`,
-        [cy, ly, cy, ly, cm]
+        [cy, ly, cy, ly, cm, NON_REV_IDS]
       ),
 
-      // AD.adr — average daily rate by month
+      // AD.adr — average daily rate by month. i.total_gross_amount + DATEDIFF — itinerary-level, no dedup needed.
       query<{ m: number; mn: string; nr: number }>(
         `SELECT MONTH(i.date_in) AS m, LEFT(MONTHNAME(i.date_in),3) AS mn,
           ROUND(SUM(CASE WHEN YEAR(i.date_in)=? THEN IFNULL(i.total_gross_amount,0) ELSE 0 END)/
             GREATEST(SUM(CASE WHEN YEAR(i.date_in)=? THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END),1)) AS nr
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status IN ('20','30','90') AND YEAR(i.date_in)=? AND MONTH(i.date_in) <= ? AND i.date_out > i.date_in
+        WHERE r.status IN ('20','30') AND YEAR(i.date_in)=? AND MONTH(i.date_in) <= ?
+          AND i.date_out > i.date_in
+          AND r.rate_type NOT IN (?)
         GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3) ORDER BY m`,
-        [cy, cy, cy, cm]
+        [cy, cy, cy, cm, NON_REV_IDS]
       ),
 
-      // AD.ch — channel breakdown via rate_type
+      // AD.ch — channel breakdown. Reservations only — no itinerary join, no dedup needed.
       query<{ ch: string; cnt: number }>(
         `SELECT IFNULL(rate_type,'Unallocated') AS ch, COUNT(*) AS cnt
-        FROM reservations WHERE status IN ('20','30','90') AND YEAR(date_created)=?
+        FROM reservations WHERE status IN ('20','30') AND YEAR(date_created)=?
+          AND rate_type NOT IN (?)
+          AND total_amount > 0
         GROUP BY rate_type ORDER BY cnt DESC LIMIT 5`,
-        [cy]
+        [cy, NON_REV_IDS]
       ),
 
-      // PLF — forward pipeline funnel
+      // PLF — forward pipeline funnel.
+      // FIX: DISTINCT subquery collapses each reservation to one row before summing total_amount.
+      // COUNT(*) replaces COUNT(DISTINCT ...) since the subquery already deduplicates.
+      // Previously summed r.total_amount across all itinerary rows (2.92x inflation on total_val).
       queryOne<{
         total_ct: number; total_val: number
         cf_ct: number; cf_val: number
         pv_ct: number; pv_val: number
       }>(
-        `SELECT COUNT(DISTINCT r.reservation_number) AS total_ct,
-          SUM(IFNULL(r.total_amount,0)) AS total_val,
-          COUNT(DISTINCT CASE WHEN r.status='30' THEN r.reservation_number END) AS cf_ct,
-          SUM(CASE WHEN r.status='30' THEN IFNULL(r.total_amount,0) ELSE 0 END) AS cf_val,
-          COUNT(DISTINCT CASE WHEN r.status='20' THEN r.reservation_number END) AS pv_ct,
-          SUM(CASE WHEN r.status='20' THEN IFNULL(r.total_amount,0) ELSE 0 END) AS pv_val
-        FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status IN ('20','30') AND i.date_in > CURDATE()`
+        `SELECT COUNT(*) AS total_ct,
+          SUM(IFNULL(total_amount,0)) AS total_val,
+          COUNT(CASE WHEN status='30' THEN 1 END) AS cf_ct,
+          SUM(CASE WHEN status='30' THEN IFNULL(total_amount,0) ELSE 0 END) AS cf_val,
+          COUNT(CASE WHEN status='20' THEN 1 END) AS pv_ct,
+          SUM(CASE WHEN status='20' THEN IFNULL(total_amount,0) ELSE 0 END) AS pv_val
+        FROM (
+          SELECT DISTINCT r.reservation_number, r.status, r.total_amount
+          FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
+          WHERE r.status IN ('20','30') AND i.date_in > CURDATE()
+            AND r.rate_type NOT IN (?)
+        ) deduped`,
+        [NON_REV_IDS]
       ),
 
-      // YTD arrivals
+      // YTD arrivals.
+      // FIX: reads r.total_amount from reservations directly (one row per reservation),
+      // using IN (SELECT DISTINCT ...) for date filtering instead of a JOIN that fans out rows.
+      // Previously: 2.23x inflation on ytd_val ($251M → $112M correct).
       queryOne<{ ytd_ct: number; ytd_val: number }>(
-        `SELECT COUNT(DISTINCT r.reservation_number) AS ytd_ct, SUM(IFNULL(r.total_amount,0)) AS ytd_val
-        FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status IN ('30','90') AND i.date_in < CURDATE() AND YEAR(i.date_in)=?`,
-        [cy]
+        `SELECT COUNT(*) AS ytd_ct, SUM(IFNULL(total_amount,0)) AS ytd_val
+        FROM reservations
+        WHERE status = '30' AND rate_type NOT IN (?)
+          AND reservation_number IN (
+            SELECT DISTINCT reservation_number FROM itineraries
+            WHERE date_in < CURDATE() AND YEAR(date_in)=?
+          )`,
+        [NON_REV_IDS, cy]
       ),
 
-      // PLT — next 6 arrivals
+      // PLT — next 6 arrivals. Per-leg display table — i.total_gross_amount per leg is intentional.
       query<{ ag: string; pr: string; ci: Date; nt: number; vl: number; st: string }>(
         `SELECT a.agent_name AS ag, COALESCE(p.name, i.property) AS pr,
           i.date_in AS ci, DATEDIFF(i.date_out, i.date_in) AS nt,
@@ -218,89 +296,128 @@ export async function GET(): Promise<NextResponse> {
         JOIN itineraries i ON r.reservation_number=i.reservation_number
         LEFT JOIN properties p ON i.property=p.property_id
         WHERE i.date_in > CURDATE() AND r.status IN ('20','30') AND i.date_out > i.date_in
-        ORDER BY i.date_in LIMIT 6`
+          AND a.agent_id NOT IN (?)
+          AND a.agent_name NOT IN (?)
+          AND LOWER(a.agent_name) NOT LIKE ?
+        ORDER BY i.date_in LIMIT 6`,
+        [EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE]
       ),
 
-      // CD — consultants
+      // CD — consultants. Reservations only — no itinerary join, no dedup needed.
       query<{ nm: string; bk: number; rv: number; cv: number }>(
         `SELECT consultant AS nm, COUNT(*) AS bk,
           SUM(IFNULL(total_amount,0))/1000 AS rv,
-          COUNT(*)*100.0/(SELECT COUNT(*) FROM reservations WHERE status IN ('20','30','90') AND YEAR(date_created)=?) AS cv
+          COUNT(*)*100.0/(
+            SELECT COUNT(*) FROM reservations
+            WHERE status IN ('20','30') AND YEAR(date_created)=?
+              AND rate_type NOT IN (?) AND total_amount > 0
+          ) AS cv
         FROM reservations
-        WHERE status IN ('20','30','90') AND consultant IS NOT NULL AND consultant!=''
-          AND YEAR(date_created)=?
+        WHERE status IN ('20','30') AND consultant IS NOT NULL AND consultant!=''
+          AND YEAR(date_created)=? AND rate_type NOT IN (?) AND total_amount > 0
         GROUP BY consultant ORDER BY bk DESC LIMIT 10`,
-        [cy, cy]
+        [cy, NON_REV_IDS, cy, NON_REV_IDS]
       ),
 
-      // KPI: confirmed forward bookings
+      // KPI: confirmed forward bookings. COUNT(DISTINCT) handles fan-out — no dedup needed.
       queryOne<{ confirmed_bkgs: number }>(
         `SELECT COUNT(DISTINCT r.reservation_number) AS confirmed_bkgs
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status='30' AND i.date_in > CURDATE()`
+        WHERE r.status='30' AND i.date_in > CURDATE()
+          AND r.rate_type NOT IN (?)`,
+        [NON_REV_IDS]
       ),
 
-      // KPI: YTD revenue + nights + adr
+      // KPI: YTD revenue + nights + adr. i.total_gross_amount + DATEDIFF — itinerary-level, no dedup needed.
       queryOne<{ rev_raw: number; total_nights: number; adr: number }>(
         `SELECT
           SUM(IFNULL(i.total_gross_amount,0)) AS rev_raw,
           SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights,
           ROUND(SUM(IFNULL(i.total_gross_amount,0))/GREATEST(SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)),1)) AS adr
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status IN ('30','90') AND YEAR(i.date_in)=? AND i.date_in < CURDATE() AND i.date_out > i.date_in`,
-        [cy]
+        WHERE r.status = '30' AND YEAR(i.date_in)=? AND i.date_in < CURDATE() AND i.date_out > i.date_in
+          AND r.rate_type NOT IN (?)`,
+        [cy, NON_REV_IDS]
       ),
 
-      // KPI: active agents
+      // KPI: active trade partners. Reservations only — no dedup needed.
       queryOne<{ active_agents: number }>(
         `SELECT COUNT(DISTINCT agent_id) AS active_agents
-        FROM reservations WHERE status IN ('20','30','90') AND YEAR(date_created)=?`,
-        [cy]
+        FROM reservations
+        WHERE status IN ('20','30') AND YEAR(date_created)=?
+          AND agent_id NOT IN (?)
+          AND total_amount > 0`,
+        [cy, EX_AGENT_IDS]
       ),
 
-      // KPI: pipeline (forward provisional)
+      // KPI: pipeline value.
+      // FIX: reads r.total_amount from reservations directly (one row per reservation),
+      // using IN (SELECT DISTINCT ...) for date filtering. Previously 2.51x inflation
+      // ($20.3M → $8.1M correct). pipeline_opps count was already correct.
       queryOne<{ pipeline_raw: number; pipeline_opps: number }>(
-        `SELECT SUM(IFNULL(r.total_amount,0)) AS pipeline_raw,
-          COUNT(DISTINCT r.reservation_number) AS pipeline_opps
-        FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status='20' AND i.date_in > CURDATE()`
+        `SELECT SUM(IFNULL(total_amount,0)) AS pipeline_raw, COUNT(*) AS pipeline_opps
+        FROM reservations
+        WHERE status='20' AND rate_type NOT IN (?)
+          AND reservation_number IN (
+            SELECT DISTINCT reservation_number FROM itineraries WHERE date_in > CURDATE()
+          )`,
+        [NON_REV_IDS]
       ),
 
-      // KPI: avg lead time
+      // KPI: avg lead time. Note: biased toward multi-leg reservations (each leg contributes
+      // one data point to the AVG with a different date_in). Logged as a separate lower-priority
+      // item — not fixed here, as it requires a MIN(date_in) dedup that changes the query shape.
       queryOne<{ avg_lead: number }>(
         `SELECT ROUND(AVG(DATEDIFF(i.date_in, r.date_created))) AS avg_lead
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status IN ('20','30','90') AND r.date_created IS NOT NULL
-          AND i.date_in > r.date_created AND YEAR(r.date_created)=?`,
-        [cy]
+        WHERE r.status IN ('20','30') AND r.date_created IS NOT NULL
+          AND i.date_in > r.date_created AND YEAR(r.date_created)=?
+          AND r.rate_type NOT IN (?)`,
+        [cy, NON_REV_IDS]
       ),
 
-      // KPI: agent revenue + avg stay
+      // KPI: agent revenue + avg stay.
+      // FIX: revenue (arev_raw) comes from a reservations-only subquery; port_adr and avg_stay
+      // come from an itinerary-join subquery. CROSS JOIN merges the two single-row results.
+      // Previously: 2.04x inflation on arev_raw ($212M → $104M correct).
       queryOne<{ arev_raw: number; port_adr: number; avg_stay: number }>(
-        `SELECT
-          SUM(IFNULL(r.total_amount,0)) AS arev_raw,
-          ROUND(SUM(IFNULL(i.total_gross_amount,0))/GREATEST(SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)),1)) AS port_adr,
-          ROUND(SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0))/GREATEST(COUNT(DISTINCT r.reservation_number),1),1) AS avg_stay
-        FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status IN ('20','30','90') AND r.agent_id IS NOT NULL AND YEAR(r.date_created)=?`,
-        [cy]
+        `SELECT rev.arev_raw, lg.port_adr, lg.avg_stay
+        FROM (
+          SELECT SUM(IFNULL(total_amount,0)) AS arev_raw
+          FROM reservations
+          WHERE status IN ('20','30') AND agent_id IS NOT NULL AND YEAR(date_created)=?
+            AND agent_id NOT IN (?)
+            AND rate_type NOT IN (?)
+        ) rev
+        CROSS JOIN (
+          SELECT
+            ROUND(SUM(IFNULL(i.total_gross_amount,0))/GREATEST(SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)),1)) AS port_adr,
+            ROUND(SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0))/GREATEST(COUNT(DISTINCT r.reservation_number),1),1) AS avg_stay
+          FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
+          WHERE r.status IN ('20','30') AND r.agent_id IS NOT NULL AND YEAR(r.date_created)=?
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+        ) lg`,
+        [cy, EX_AGENT_IDS, NON_REV_IDS, cy, EX_AGENT_IDS, NON_REV_IDS]
       ),
 
-      // KPI: consultants
+      // KPI: consultants. Reservations only — no dedup needed.
       queryOne<{ n_consult: number; total_bkgs: number }>(
         `SELECT COUNT(DISTINCT consultant) AS n_consult, COUNT(*) AS total_bkgs
         FROM reservations
-        WHERE status IN ('20','30','90') AND consultant IS NOT NULL AND consultant!=''
-          AND YEAR(date_created)=?`,
+        WHERE status IN ('20','30') AND consultant IS NOT NULL AND consultant!=''
+          AND YEAR(date_created)=? AND total_amount > 0`,
         [cy]
       ),
 
-      // KPI: LY bookings for pace index
+      // KPI: LY bookings for pace index. COUNT(DISTINCT) handles fan-out — no dedup needed.
       queryOne<{ cnt: number }>(
         `SELECT COUNT(DISTINCT r.reservation_number) AS cnt
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status IN ('20','30','90') AND YEAR(i.date_in)=?`,
-        [ly]
+        WHERE r.status IN ('20','30') AND YEAR(i.date_in)=?
+          AND r.rate_type NOT IN (?)
+          AND r.total_amount > 0`,
+        [ly, NON_REV_IDS]
       ),
     ])
 
