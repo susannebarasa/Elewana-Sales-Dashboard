@@ -29,12 +29,13 @@ const NAV = [
   },
 ]
 
-type Props = { view: string; onView: (v: string) => void }
+type Props = { open: boolean; view: string; onView: (v: string) => void }
 
-export default function Sidebar({ view, onView }: Props) {
+export default function Sidebar({ open, view, onView }: Props) {
   return (
     <Drawer
-      variant="permanent"
+      variant="persistent"
+      open={open}
       slotProps={{
         paper: {
           sx: {

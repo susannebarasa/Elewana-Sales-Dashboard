@@ -10,6 +10,9 @@ import ToggleButton from '@mui/material/ToggleButton'
 import Select from '@mui/material/Select'
 import MenuItem from '@mui/material/MenuItem'
 import Divider from '@mui/material/Divider'
+import IconButton from '@mui/material/IconButton'
+import MenuIcon from '@mui/icons-material/Menu'
+import MenuOpenIcon from '@mui/icons-material/MenuOpen'
 
 interface Filters {
   period: 'm' | 'y' | 'a'
@@ -25,6 +28,8 @@ type Props = {
   filters: Filters
   onFilters: (f: Filters) => void
   lastUpdated: string
+  sidebarOpen: boolean
+  onToggleSidebar: () => void
 }
 
 const VIEW_TITLES: Record<string, string> = {
@@ -61,7 +66,7 @@ const selectSx = {
   '.MuiSelect-select': { py: '4px', px: '8px' },
 }
 
-export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdated }: Props) {
+export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdated, sidebarOpen, onToggleSidebar }: Props) {
   const set = (k: keyof Filters, v: string) => onFilters({ ...filters, [k]: v })
 
   return (
@@ -84,6 +89,16 @@ export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdat
             gap: 1.5,
           }}
         >
+          {/* Sidebar toggle */}
+          <IconButton
+            onClick={onToggleSidebar}
+            size="small"
+            sx={{ color: 'text.secondary', mr: 0.5, '&:hover': { color: 'text.primary' } }}
+            aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+          >
+            {sidebarOpen ? <MenuOpenIcon fontSize="small" /> : <MenuIcon fontSize="small" />}
+          </IconButton>
+
           {/* View title */}
           <Typography
             variant="h5"

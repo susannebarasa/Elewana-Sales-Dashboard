@@ -4,7 +4,7 @@ import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import Alert from '@mui/material/Alert'
 import type { DashboardData } from '@/types'
-import Sidebar from '@/components/Sidebar'
+import Sidebar, { DRAWER_WIDTH } from '@/components/Sidebar'
 import Topbar from '@/components/Topbar'
 import PaceView from '@/components/views/PaceView'
 import OccView from '@/components/views/OccView'
@@ -24,6 +24,7 @@ const CY = String(new Date().getFullYear())
 export default function Page() {
   const [view, setView] = useState('sales')
   const [sub, setSub] = useState('pace')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [filters, setFilters] = useState<Filters>({
     period: 'y',
     year: CY,
@@ -79,8 +80,23 @@ export default function Page() {
 
   return (
     <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden', bgcolor: 'background.default' }}>
-      <Sidebar view={view} onView={(v) => { setView(v); setSub('pace') }} />
-      <Box component="main" sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+      <Sidebar
+        open={sidebarOpen}
+        view={view}
+        onView={(v) => { setView(v); setSub('pace') }}
+      />
+      <Box
+        component="main"
+        sx={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          minWidth: 0,
+          ml: sidebarOpen ? `${DRAWER_WIDTH}px` : 0,
+          transition: 'margin 0.22s ease',
+        }}
+      >
         <Topbar
           view={view}
           sub={sub}
@@ -88,6 +104,8 @@ export default function Page() {
           filters={filters}
           onFilters={setFilters}
           lastUpdated={data?.lastUpdated ?? ''}
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen((o) => !o)}
         />
         <Box sx={{ flex: 1, overflowY: 'auto', p: '18px 20px' }}>
           {renderContent()}
