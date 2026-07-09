@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
 import { query, queryOne } from '@/lib/db'
+import { dateInYearMonthRange } from '@/lib/dateRange'
 import type { MarketSegmentProfile, MarketSegmentPropertyBreakdown, MarketSegmentAgentBreakdown } from '@/types'
 import {
   NON_REVENUE_RATE_TYPE_IDS,
@@ -83,26 +84,27 @@ export async function GET(
           JOIN agents a ON r.agent_id = a.agent_id
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}
+          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}
         ) rv
         CROSS JOIN (
           SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt
           FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
           JOIN agents a ON r.agent_id = a.agent_id
-          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}
+          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}
         ) nt
         CROSS JOIN (
           SELECT COUNT(DISTINCT r.agent_id) AS active_agents
           FROM reservations r
           JOIN itineraries i ON r.reservation_number = i.reservation_number
           JOIN agents a ON r.agent_id = a.agent_id
-          WHERE r.status IN ('20','30') AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}
+          WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}
             AND r.total_amount > 0${AND_SEG}
         ) ag`,
         [
-          KES_RATE, cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS,
-          cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS,
-          cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS,
+          KES_RATE,
+          ...AGENT_EXCLUSION_PARAMS,
+          ...AGENT_EXCLUSION_PARAMS,
+          ...AGENT_EXCLUSION_PARAMS,
         ]
       ),
 
@@ -119,7 +121,7 @@ export async function GET(
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE r.status = '30' AND r.agent_id IS NOT NULL AND i.property IS NOT NULL
-            AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}
+            AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}
           GROUP BY i.property
         ) rv
         JOIN (
@@ -127,15 +129,12 @@ export async function GET(
           FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
           JOIN agents a ON r.agent_id = a.agent_id
           WHERE r.status = '30' AND r.agent_id IS NOT NULL AND i.property IS NOT NULL
-            AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}
+            AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}
           GROUP BY i.property
         ) nt ON rv.property_id = nt.property_id
         LEFT JOIN properties p ON rv.property_id = p.property_id
         ORDER BY rv.rv DESC`,
-        [
-          KES_RATE, cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS,
-          cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS,
-        ]
+        [KES_RATE, ...AGENT_EXCLUSION_PARAMS, ...AGENT_EXCLUSION_PARAMS]
       ),
 
       // Agent breakdown — top 10 by Room Revenue. Same two-subquery join pattern as Property
@@ -151,7 +150,7 @@ export async function GET(
           JOIN agents a ON r.agent_id = a.agent_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE r.status = '30' AND r.agent_id IS NOT NULL
-            AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}
+            AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}
           GROUP BY r.agent_id, a.agent_name
         ) rv
         JOIN (
@@ -159,14 +158,11 @@ export async function GET(
           FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
           JOIN agents a ON r.agent_id = a.agent_id
           WHERE r.status = '30' AND r.agent_id IS NOT NULL
-            AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}
+            AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}
           GROUP BY r.agent_id
         ) nt ON rv.agent_id = nt.agent_id
         ORDER BY rv.rv DESC LIMIT 10`,
-        [
-          KES_RATE, cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS,
-          cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS,
-        ]
+        [KES_RATE, ...AGENT_EXCLUSION_PARAMS, ...AGENT_EXCLUSION_PARAMS]
       ),
 
       // Total distinct-agent count for this segment (same population as the agent breakdown's rv
@@ -178,8 +174,8 @@ export async function GET(
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
         WHERE r.status = '30' AND r.agent_id IS NOT NULL
-          AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}`,
-        [cy, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS]
+          AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}`,
+        [...AGENT_EXCLUSION_PARAMS]
       ),
     ])
 
@@ -191,8 +187,8 @@ export async function GET(
       JOIN agents a ON r.agent_id = a.agent_id
       JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
       LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-      WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?${AGENT_EXCLUSIONS}${AND_SEG}`,
-      [KES_RATE, cy - 1, monthLo, monthHi, ...AGENT_EXCLUSION_PARAMS]
+      WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('i.date_in', cy - 1, monthLo, monthHi)}${AGENT_EXCLUSIONS}${AND_SEG}`,
+      [KES_RATE, ...AGENT_EXCLUSION_PARAMS]
     )
 
     const roomRevenue = Math.round(n(overviewRow?.rv))

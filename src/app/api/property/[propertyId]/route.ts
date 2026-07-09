@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
 import { query, queryOne } from '@/lib/db'
+import { dateInFullYear } from '@/lib/dateRange'
 import type { PropertyProfile, PropertyTopAgent } from '@/types'
 import {
   NON_REVENUE_RATE_TYPE_IDS,
@@ -71,7 +72,7 @@ export async function GET(
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND i.property = ? AND YEAR(i.date_in) = 2026 AND i.date_out > i.date_in
+        WHERE r.status = '30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?`,
         [KES_RATE, propertyId, NON_REV_IDS, RES_PREFIX]
@@ -83,7 +84,7 @@ export async function GET(
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND i.property = ? AND YEAR(i.date_in) = 2026 AND i.date_out > i.date_in
+        WHERE r.status = '30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?`,
         [KES_RATE, propertyId, NON_REV_IDS, RES_PREFIX]
@@ -96,7 +97,7 @@ export async function GET(
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND i.property = ? AND YEAR(i.date_in) = 2026`,
+        WHERE r.status='30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)}`,
         [KES_RATE, propertyId]
       ),
 
@@ -106,7 +107,7 @@ export async function GET(
       queryOne<{ sold_nights: number }>(
         `SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS sold_nights
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status = '30' AND i.property = ? AND YEAR(i.date_in) = 2026 AND i.date_out > i.date_in
+        WHERE r.status = '30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?`,
         [propertyId, NON_REV_IDS, RES_PREFIX]
       ),
@@ -127,7 +128,7 @@ export async function GET(
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           JOIN agents a ON r.agent_id = a.agent_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND i.property = ? AND YEAR(i.date_in) = 2026
+          WHERE r.status = '30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)}
             AND r.agent_id NOT IN (?)
             AND a.agent_name NOT IN (?)
             AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -138,7 +139,7 @@ export async function GET(
         JOIN (
           SELECT r.agent_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt
           FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-          WHERE r.status = '30' AND i.property = ? AND YEAR(i.date_in) = 2026
+          WHERE r.status = '30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)}
             AND r.agent_id NOT IN (?)
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
@@ -146,8 +147,17 @@ export async function GET(
         ) nt ON rv.agent_id = nt.agent_id
         ORDER BY rv.rv DESC LIMIT 10`,
         [
-          KES_RATE, propertyId, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX,
-          propertyId, EX_AGENT_IDS, NON_REV_IDS, RES_PREFIX,
+          KES_RATE,
+          propertyId,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX,
+          propertyId,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX
         ]
       ),
     ])

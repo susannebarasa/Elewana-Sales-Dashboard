@@ -2,8 +2,10 @@ import mysql from 'mysql2/promise'
 
 function buildUri(): string {
   const raw = process.env.DATABASE_URL ?? ''
-  // Strip SQLAlchemy driver prefix
+  // Strip SQLAlchemy driver prefix. Also tolerate a duplicated `DATABASE_URL=`
+  // pasted into the value (common .env copy/paste mistake → ERR_INVALID_URL).
   const uri = raw
+    .replace(/^DATABASE_URL=/, '')
     .replace(/^mysql\+mysqlconnector:\/\//, 'mysql://')
     .replace(/^mysql\+pymysql:\/\//, 'mysql://')
     // Strip charset query param — passed via options below

@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Box from '@mui/material/Box'
 import Alert from '@mui/material/Alert'
 import DashboardSkeleton from '@/components/DashboardSkeleton'
@@ -22,6 +22,7 @@ import AgentPerformanceDrillPanel from '@/components/AgentPerformanceDrillPanel'
 import PropertyProfilePanel from '@/components/PropertyProfilePanel'
 import MarketSegmentProfilePanel from '@/components/MarketSegmentProfilePanel'
 import FinanceView from '@/components/views/FinanceView'
+import { parseDashboardView, type DashboardView } from '@/lib/dashboardViews'
 
 interface Filters {
   period: 'm' | 'y' | 'a'
@@ -49,6 +50,9 @@ export default function Page() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // View-scoped fetch cache (2026-07-09) — keyed by view|filters. Switching tabs reuses a
+  // prior response for the same filter set instead of re-hitting the DB.
+  const viewCacheRef = useRef<Map<string, DashboardData>>(new Map())
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   // Agent Performance drill-down (2026-07-14g) — deliberately SEPARATE from selectedAgentId.
   // Agent clicks from AgentsView (Trade Partners/Agent Performance) open this view-specific
@@ -61,7 +65,32 @@ export default function Page() {
   // Segment Performance both produce one today.
   const [entityClick, setEntityClick] = useState<EntityClickContext | null>(null)
 
+  // Daily uses /api/daily — no dashboard batch. Other Sales sub-tabs request only their view's queries.
+  const dashboardView: DashboardView | null =
+    view === 'sales' && sub !== 'daily' ? parseDashboardView(sub) : null
+
   useEffect(() => {
+    // Filter change invalidates every view's cached payload.
+    viewCacheRef.current.clear()
+  }, [filters.year, filters.period, filters.channel, filters.market, filters.property])
+
+  useEffect(() => {
+    if (!dashboardView) {
+      setLoading(false)
+      setError(null)
+      return
+    }
+
+    const cacheKey = `${dashboardView}|${filters.year}|${filters.period}|${filters.channel}|${filters.market}|${filters.property}`
+    const cached = viewCacheRef.current.get(cacheKey)
+    if (cached) {
+      setData(cached)
+      setLoading(false)
+      setError(null)
+      return
+    }
+
+    let cancelled = false
     setLoading(true)
     setError(null)
     const params = new URLSearchParams({
@@ -70,23 +99,46 @@ export default function Page() {
       channel: filters.channel,
       market: filters.market,
       property: filters.property,
+      view: dashboardView,
     })
     fetch(`/api/dashboard?${params.toString()}`)
       .then((r) => {
         if (!r.ok) return r.json().then((e) => Promise.reject(e.error ?? 'Server error'))
         return r.json()
       })
-      .then((d: DashboardData) => { setData(d); setLoading(false) })
-      .catch((e) => { setError(String(e)); setLoading(false) })
-  }, [filters.year, filters.period, filters.channel, filters.market, filters.property])
+      .then((d: DashboardData) => {
+        if (cancelled) return
+        viewCacheRef.current.set(cacheKey, d)
+        setData(d)
+        setLoading(false)
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setError(String(e))
+        setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [dashboardView, filters.year, filters.period, filters.channel, filters.market, filters.property])
 
   const renderContent = () => {
-    // Finance (2026-07-16) — standalone Sand River MIS data, no dependency on the /api/dashboard
-    // fetch at all, so it must be checked BEFORE the loading/error/data gates below. Otherwise a
-    // slow dashboard cold-load (35-90s+, see project_performance_investigation memory) would block
-    // a tab that has nothing to do with that fetch.
-    if (view === 'sales' && sub === 'finance') {
+    if (view !== 'sales') {
+      return (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200, color: 'text.secondary', fontSize: 13 }}>
+          {view} — coming soon
+        </Box>
+      )
+    }
+
+    // Finance and Daily are both standalone — Finance never touches /api/dashboard at all (see
+    // FinanceView), and Daily uses its own /api/daily fetch (dashboardView is null for both, per
+    // the useEffect above, so `data` never populates for either). Both must be checked before the
+    // loading/error/data gates below, or a slow dashboard cold-load would block a tab that has
+    // nothing to do with that fetch.
+    if (sub === 'finance') {
       return <FinanceView />
+    }
+    if (sub === 'daily') {
+      return <DailyView onSelectAgent={setSelectedAgentId} onSelectProperty={setEntityClick} />
     }
 
     if (loading) {
@@ -97,18 +149,9 @@ export default function Page() {
     }
     if (!data) return null
 
-    if (view !== 'sales') {
-      return (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200, color: 'text.secondary', fontSize: 13 }}>
-          {view} — coming soon
-        </Box>
-      )
-    }
-
     // Nav consolidation (2026-07-09) — all 10 views are now sub-tabs of Sales, in one switch.
-    // The 4 that used to be separate Sidebar entries (exec-summary/property-performance/
-    // market-segment-performance/booking-status-movement) are unchanged in content — only their
-    // navigation position moved.
+    // View-scoped API (2026-07-09): each case receives a payload that includes that tab's
+    // fields; unused sections are empty defaults from the server.
     switch (sub) {
       case 'exec-summary':               return <ExecSummaryView data={data} filters={filters} onSelectProperty={setEntityClick} />
       case 'property-performance':       return <PropertyPerformanceView data={data} onSelectProperty={setEntityClick} />
@@ -119,7 +162,6 @@ export default function Page() {
       case 'occ':  return <OccView data={data} filters={filters} onSelectProperty={setEntityClick} />
       case 'pl':   return <PipelineView data={data} filters={filters} onSelectAgent={setSelectedAgentId} onSelectProperty={setEntityClick} />
       case 'cn':   return <ConsultView data={data} filters={filters} />
-      case 'daily': return <DailyView onSelectAgent={setSelectedAgentId} onSelectProperty={setEntityClick} />
       default:     return <ExecSummaryView data={data} filters={filters} onSelectProperty={setEntityClick} />
     }
   }

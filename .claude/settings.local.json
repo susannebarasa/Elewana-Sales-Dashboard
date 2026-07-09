@@ -8,7 +8,11 @@
       "Bash(cp \"C:\\\\Users\\\\LENOVO\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--el-dashboard\\\\4418a1b8-7b15-4512-826d-d6d35ba1d786\\\\scratchpad\\\\rs23_before.js\" \"D:/el_dashboard/_scratch_rs23.js\")",
       "Bash(node _scratch_rs23.js)",
       "Bash(powershell -Command \"Get-Process -Id \\(Get-NetTCPConnection -LocalPort 3000\\).OwningProcess | Stop-Process -Force\")",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(pkill -f \"npm run dev\")",
+      "Bash(rm -f /tmp/finance_*.js /tmp/dev-server.log)",
+      "Bash(rm -f C:/tmp/*.png C:/tmp/dev-server2.log)"
     ]
   }
 }
