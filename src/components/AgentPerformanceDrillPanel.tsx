@@ -30,7 +30,7 @@ function Stat({ label, value, note }: { label: string; value: string; note?: str
           <Typography variant="overline" sx={{ display: 'block' }}>{label}</Typography>
           <Typography
             variant="h4"
-            sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontSize: 24, lineHeight: 1, color: 'text.primary', my: 0.5 }}
+            sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 700, fontSize: 24, lineHeight: 1, color: 'text.primary', my: 0.5 }}
           >
             {value}
           </Typography>

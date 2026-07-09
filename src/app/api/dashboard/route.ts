@@ -194,7 +194,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           WHERE r.status IN ('20','30')
             AND i.date_in > CURDATE() AND i.date_in <= DATE_ADD(CURDATE(), INTERVAL 5 MONTH)
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
           GROUP BY r.reservation_number, r.status, dt.currency, r.total_amount
         ) deduped
         GROUP BY yr, mon, mo
@@ -725,7 +725,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status='30' AND i.date_in > CURDATE()
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
-          AND r.total_amount > 0`,
+          AND r.total_amount > 0${AND_P}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -765,7 +765,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
         ) nights
         CROSS JOIN (
           SELECT ${ROOM_REVENUE_SUM_SQL} AS rev_raw, ${EXTRAS_SUM_SQL} AS extras_raw
@@ -774,7 +774,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
         ) rev
         CROSS JOIN (
           SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table_revenue,
@@ -783,7 +783,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.status='30' AND YEAR(i2.date_in)=? AND MONTH(i2.date_in) BETWEEN ? AND ? AND i2.date_in <= CURDATE()
+          WHERE r2.status='30' AND YEAR(i2.date_in)=? AND MONTH(i2.date_in) BETWEEN ? AND ? AND i2.date_in <= CURDATE()${AND_P2}
         ) dayuse`,
         [cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,
          KES_RATE, KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,

@@ -53,7 +53,7 @@ export default function OccView({ data, filters, onSelectProperty }: Props) {
     labels: data.OD.arr.months,
     datasets: [
       { label: filters.year, data: data.OD.arr.act, borderColor: '#B7632A', backgroundColor: 'rgba(183,99,42,0.1)', borderWidth: 2, tension: 0.3, pointRadius: 3 },
-      { label: 'LY', data: data.OD.arr.ly, borderColor: 'rgba(107,95,80,0.5)', backgroundColor: 'transparent', borderWidth: 1.5, tension: 0.3, pointRadius: 2, borderDash: [4, 3] },
+      { label: 'LY', data: data.OD.arr.ly, borderColor: 'rgba(138,123,101,0.8)', backgroundColor: 'transparent', borderWidth: 1.5, tension: 0.3, pointRadius: 2, borderDash: [4, 3] },
       { label: 'Extras', data: data.OD.arr.extras, borderColor: '#4A5A3A', backgroundColor: 'transparent', borderWidth: 1.5, tension: 0.3, pointRadius: 2, borderDash: [2, 2] },
     ],
   }

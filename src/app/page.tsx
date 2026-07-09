@@ -1,8 +1,8 @@
 'use client'
 import { useState, useEffect } from 'react'
 import Box from '@mui/material/Box'
-import CircularProgress from '@mui/material/CircularProgress'
 import Alert from '@mui/material/Alert'
+import DashboardSkeleton from '@/components/DashboardSkeleton'
 import type { DashboardData, EntityClickContext } from '@/types'
 import Sidebar, { DRAWER_WIDTH } from '@/components/Sidebar'
 import Topbar from '@/components/Topbar'
@@ -21,6 +21,7 @@ import AgentProfilePanel from '@/components/AgentProfilePanel'
 import AgentPerformanceDrillPanel from '@/components/AgentPerformanceDrillPanel'
 import PropertyProfilePanel from '@/components/PropertyProfilePanel'
 import MarketSegmentProfilePanel from '@/components/MarketSegmentProfilePanel'
+import FinanceView from '@/components/views/FinanceView'
 
 interface Filters {
   period: 'm' | 'y' | 'a'
@@ -80,12 +81,16 @@ export default function Page() {
   }, [filters.year, filters.period, filters.channel, filters.market, filters.property])
 
   const renderContent = () => {
+    // Finance (2026-07-16) — standalone Sand River MIS data, no dependency on the /api/dashboard
+    // fetch at all, so it must be checked BEFORE the loading/error/data gates below. Otherwise a
+    // slow dashboard cold-load (35-90s+, see project_performance_investigation memory) would block
+    // a tab that has nothing to do with that fetch.
+    if (view === 'sales' && sub === 'finance') {
+      return <FinanceView />
+    }
+
     if (loading) {
-      return (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200 }}>
-          <CircularProgress size={28} sx={{ color: 'primary.main' }} />
-        </Box>
-      )
+      return <DashboardSkeleton />
     }
     if (error) {
       return <Alert severity="error" sx={{ mt: 2 }}>Failed to load dashboard data: {error}</Alert>

@@ -99,8 +99,11 @@ export interface KpiMetric {
   fmt: string
   lbl: string
   d: string
-  thG: number
-  thY: number
+  // Optional (2026-07-16 design pass) — cards with no genuine good/bad threshold (e.g. a raw
+  // portfolio total with no target) omit these and render a neutral accent bar instead of a
+  // fabricated RAG verdict. See KpiRow.tsx's rag().
+  thG?: number
+  thY?: number
   inv?: boolean
   // Real prior-year value, same units as v. Omitted when no genuine LY query
   // exists for this card — KpiRow renders no YoY % in that case rather than

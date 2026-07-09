@@ -4,7 +4,6 @@ import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Typography from '@mui/material/Typography'
 import Grid from '@mui/material/Grid'
-import Tooltip from '@mui/material/Tooltip'
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
   PointElement, LineElement, Tooltip as ChartTooltip,
@@ -12,6 +11,7 @@ import {
 import { Line } from 'react-chartjs-2'
 import type { DashboardData } from '@/types'
 import MiniStatRow from '@/components/MiniStatRow'
+import { KpiCardShell } from '@/components/KpiRow'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ChartTooltip)
 
@@ -32,32 +32,6 @@ const fmtDollar = (v: number): string =>
   Math.abs(v) >= 1e6 ? `${v < 0 ? '-' : ''}$${(Math.abs(v) / 1e6).toFixed(1)}M`
     : Math.abs(v) >= 1e3 ? `${v < 0 ? '-' : ''}$${(Math.abs(v) / 1e3).toFixed(1)}k`
     : `${v < 0 ? '-' : ''}$${Math.round(Math.abs(v)).toLocaleString()}`
-
-function Stat({ label, value, note, tooltip }: { label: string; value: string; note?: string; tooltip?: string }) {
-  const card = (
-    <Card sx={{ height: '100%' }}>
-      <CardContent>
-        <Typography variant="overline" sx={{ display: 'block' }}>{label}</Typography>
-        <Typography
-          variant="h4"
-          sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontSize: 24, lineHeight: 1, color: 'text.primary', my: 0.5 }}
-        >
-          {value}
-        </Typography>
-        {note && (
-          <Typography sx={{ fontSize: '0.625rem', color: 'text.secondary', fontStyle: 'italic', display: 'block' }}>
-            {note}
-          </Typography>
-        )}
-      </CardContent>
-    </Card>
-  )
-  return (
-    <Grid size={3}>
-      {tooltip ? <Tooltip title={tooltip} placement="top" arrow>{card}</Tooltip> : card}
-    </Grid>
-  )
-}
 
 // Booking Status Movement (2026-07-15, reduced to 4 cards 2026-07-09) — KPI row + monthly trend
 // chart, no drill-down table (this view is about movement over time, not comparing discrete
@@ -105,7 +79,7 @@ export default function BookingStatusMovementView({ data, filters }: Props) {
       {
         label: 'New Confirmed',
         data: bsm.monthlyTrend.newConfirmed.map((v) => v / 1000),
-        borderColor: '#5B7BA8',
+        borderColor: '#4A5A3A', // secondary/olive-green — was an out-of-system blue-gray
         backgroundColor: 'transparent',
         borderWidth: 1.5,
         tension: 0.3,
@@ -118,13 +92,15 @@ export default function BookingStatusMovementView({ data, filters }: Props) {
   return (
     <Box>
       <Grid container spacing={1.5} sx={{ mb: 1.5 }}>
-        <Stat label="Confirmed" value={fmtDollar(bsm.confirmed.value)} note={`${bsm.confirmed.count.toLocaleString()} bookings`} />
-        <Stat label="Provisional" value={fmtDollar(bsm.provisional.value)} note={`${bsm.provisional.count.toLocaleString()} bookings`} />
-        <Stat label="Cancelled" value={fmtDollar(bsm.cancelled.value)} note={`${bsm.cancelled.count.toLocaleString()} confirmed bookings lost`} />
-        <Stat
+        <KpiCardShell label="Confirmed" value={fmtDollar(bsm.confirmed.value)} caption={`${bsm.confirmed.count.toLocaleString()} bookings`} />
+        <KpiCardShell label="Provisional" value={fmtDollar(bsm.provisional.value)} caption={`${bsm.provisional.count.toLocaleString()} bookings`} />
+        {/* accent=red mirrors the chart's own Cancelled line color below — a real loss signal, not a fabricated threshold */}
+        <KpiCardShell label="Cancelled" value={fmtDollar(bsm.cancelled.value)} caption={`${bsm.cancelled.count.toLocaleString()} confirmed bookings lost`} accent="red" />
+        <KpiCardShell
           label="Net Pick-up"
           value={fmtDollar(bsm.netPickup)}
-          note="New Confirmed + Converted − Cancelled"
+          caption="New Confirmed + Converted − Cancelled"
+          accent={bsm.netPickup >= 0 ? 'green' : 'red'}
           tooltip="New Confirmed (created & confirmed this period) + Provisional → Confirmed (created earlier, converted this period) − Cancelled. The two conversion sources are mutually exclusive by date_created, so this is a non-overlapping net figure."
         />
       </Grid>
@@ -168,7 +144,7 @@ export default function BookingStatusMovementView({ data, filters }: Props) {
               <Typography variant="caption">Cancelled</Typography>
             </Box>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Box sx={{ width: 12, height: 2, bgcolor: '#5B7BA8', borderRadius: 1 }} />
+              <Box sx={{ width: 12, height: 2, bgcolor: '#4A5A3A', borderRadius: 1 }} />
               <Typography variant="caption">New Confirmed</Typography>
             </Box>
           </Box>

@@ -19,6 +19,8 @@ import type { ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
 import type { DashboardData, EntityClickContext } from '@/types'
 import { propertyBarClickOptions } from '@/lib/chartClicks'
+import { KpiCardShell } from '@/components/KpiRow'
+import EmptyState from '@/components/EmptyState'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 
@@ -30,32 +32,6 @@ type Props = {
 const fmtDollar = (v: number | null): string =>
   v === null ? '—' : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}k` : `$${Math.round(v).toLocaleString()}`
 const fmtPct = (v: number | null): string => (v === null ? '—' : `${v.toFixed(1)}%`)
-
-// 4-card standard (2026-07-09) — simple label/value cards, no threshold/RAG coloring (unlike
-// KpiRow) since there's no established green/amber/red basis for these portfolio-wide summary
-// figures yet — same lightweight pattern Booking Status Movement's own Stat already uses.
-function SummaryStat({ label, value, note }: { label: string; value: string; note?: string }) {
-  return (
-    <Grid size={3}>
-      <Card sx={{ height: '100%' }}>
-        <CardContent>
-          <Typography variant="overline" sx={{ display: 'block' }}>{label}</Typography>
-          <Typography
-            variant="h4"
-            sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontSize: 28, lineHeight: 1, color: 'text.primary', my: 0.5 }}
-          >
-            {value}
-          </Typography>
-          {note && (
-            <Typography sx={{ fontSize: '0.625rem', color: 'text.secondary', fontStyle: 'italic', display: 'block' }}>
-              {note}
-            </Typography>
-          )}
-        </CardContent>
-      </Card>
-    </Grid>
-  )
-}
 
 // Same green/red "up/down" convention used everywhere else (Market Segment Performance's own
 // chart, Booking Status Movement, Agent Pace).
@@ -123,35 +99,56 @@ export default function PropertyPerformanceView({ data, onSelectProperty }: Prop
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       <Grid container spacing={1.5}>
-        <SummaryStat label="Total Room Revenue" value={fmtDollar(totalRoomRevenue)} note="Full-year 2026, all properties" />
-        <SummaryStat label="Avg Occupancy %" value={fmtPct(data.KP_BASE.occ.occPct.v)} note="Portfolio-wide, nights-weighted" />
-        <SummaryStat label="Properties At/Over Budget" value={String(overBudgetCount)} note={`of ${overBudgetCount + underBudgetCount} with a budget set`} />
-        <SummaryStat label="Properties Under Budget" value={String(underBudgetCount)} note={`of ${overBudgetCount + underBudgetCount} with a budget set`} />
+        <KpiCardShell label="Total Room Revenue" value={fmtDollar(totalRoomRevenue)} caption="Full-year 2026, all properties" />
+        <KpiCardShell label="Avg Occupancy %" value={fmtPct(data.KP_BASE.occ.occPct.v)} caption="Portfolio-wide, nights-weighted" />
+        {/* accent mirrors the same green/red convention as this view's own budget-variance chips
+            below — this is carrying forward an already-computed verdict (over vs under budget),
+            not inventing a new threshold. */}
+        <KpiCardShell
+          label="Properties At/Over Budget"
+          value={String(overBudgetCount)}
+          caption={`of ${overBudgetCount + underBudgetCount} with a budget set`}
+          accent="green"
+        />
+        <KpiCardShell
+          label="Properties Under Budget"
+          value={String(underBudgetCount)}
+          caption={`of ${overBudgetCount + underBudgetCount} with a budget set`}
+          accent="red"
+        />
       </Grid>
 
-      <Card>
-        <CardContent>
-          <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Room Revenue by Property</Typography>
-          <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
-            Full-year 2026 — sorted descending · click a bar for detail
-          </Typography>
-          <Box sx={{ height: Math.max(180, rows.length * 24), position: 'relative' }}>
-            <Bar data={revenueChartData} options={revenueChartOptions} />
-          </Box>
-        </CardContent>
-      </Card>
+      {rows.length === 0 ? (
+        <EmptyState message="No properties match this filter selection." />
+      ) : (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Room Revenue by Property</Typography>
+            <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
+              Full-year 2026 — sorted descending · click a bar for detail
+            </Typography>
+            <Box sx={{ height: Math.max(180, rows.length * 24), position: 'relative' }}>
+              <Bar data={revenueChartData} options={revenueChartOptions} />
+            </Box>
+          </CardContent>
+        </Card>
+      )}
 
-      <Card>
-        <CardContent>
-          <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Budget Variance % by Property</Typography>
-          <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
-            Full-year 2026 · green = at/over budget (≥100%), red = under budget · properties with no budget set are excluded here, still listed below · click a bar for detail
-          </Typography>
-          <Box sx={{ height: Math.max(180, varianceRows.length * 24), position: 'relative' }}>
-            <Bar data={varianceChartData} options={varianceChartOptions} />
-          </Box>
-        </CardContent>
-      </Card>
+      {varianceRows.length === 0 ? (
+        <EmptyState message="No properties with a budget set in this selection." />
+      ) : (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Budget Variance % by Property</Typography>
+            <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
+              Full-year 2026 · green = at/over budget (≥100%), red = under budget · properties with no budget set are excluded here, still listed below · click a bar for detail
+            </Typography>
+            <Box sx={{ height: Math.max(180, varianceRows.length * 24), position: 'relative' }}>
+              <Bar data={varianceChartData} options={varianceChartOptions} />
+            </Box>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent>

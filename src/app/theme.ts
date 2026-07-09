@@ -9,7 +9,7 @@ const theme = createTheme({
     success:   { main: '#3B6D11' },
     error:     { main: '#C0392B' },
     warning:   { main: '#9A7A3A' },
-    background: { default: '#F5F0E8', paper: '#FAF6EC' },
+    background: { default: '#EDEEE6', paper: '#FAF6EC' },
     text: { primary: '#1F1A14', secondary: '#6B5F50', disabled: '#A0917E' },
     divider: '#C9BEA9',
   },
@@ -20,14 +20,14 @@ const theme = createTheme({
     h3: { fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 500 },
     h4: { fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 500 },
     h5: { fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 500 },
-    h6: { fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 500 },
+    h6: { fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 600 },
     body1: { fontSize: '0.8125rem' },
     body2: { fontSize: '0.75rem' },
     caption: { fontSize: '0.6875rem', color: '#6B5F50' },
     overline: { fontSize: '0.625rem', letterSpacing: '0.1em', color: '#6B5F50' },
     button: { fontFamily: '"Inter", system-ui, sans-serif', textTransform: 'none', fontWeight: 500 },
   },
-  shape: { borderRadius: 6 },
+  shape: { borderRadius: 8 },
   components: {
     MuiCssBaseline: {
       styleOverrides: {
@@ -77,7 +77,7 @@ const theme = createTheme({
     },
     MuiLinearProgress: {
       styleOverrides: {
-        root: { borderRadius: 3, height: 8, backgroundColor: '#F5F0E8' },
+        root: { borderRadius: 3, height: 8, backgroundColor: '#EDEEE6' },
         bar: { borderRadius: 3 },
       },
     },
@@ -94,7 +94,7 @@ const theme = createTheme({
             color: '#854F0B',
             '&:hover': { backgroundColor: '#FAEEDA' },
           },
-          '&:hover': { backgroundColor: '#F5F0E8' },
+          '&:hover': { backgroundColor: '#EDEEE6' },
         },
       },
     },

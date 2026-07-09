@@ -20,6 +20,8 @@ import Alert from '@mui/material/Alert'
 import Select from '@mui/material/Select'
 import MenuItem from '@mui/material/MenuItem'
 import type { DailyData, EntityClickContext } from '@/types'
+import { KpiCardShell } from '@/components/KpiRow'
+import { KpiCardSkeletonRow, TableSkeletonBlock } from '@/components/DashboardSkeleton'
 
 const WINDOWS = [3, 7, 14, 21] as const
 
@@ -39,34 +41,6 @@ const propertyCellSx = (clickable: boolean) => ({
   cursor: clickable ? 'pointer' : 'default',
   '&:hover': clickable ? { textDecoration: 'underline' } : undefined,
 } as const)
-
-function StatCard({ label, value, note, subLabel, flagged }: { label: string; value: string; note?: string; subLabel?: string; flagged?: boolean }) {
-  return (
-    <Grid size={3}>
-      <Card sx={{ border: '0.5px solid', borderColor: flagged ? 'warning.main' : 'divider', bgcolor: flagged ? '#FDF8EE' : 'background.paper', borderRadius: 1.5, height: '100%' }}>
-        <CardContent>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Typography variant="overline" sx={{ display: 'block' }}>{label}</Typography>
-            {note && (
-              <Tooltip title={note} arrow>
-                <InfoOutlinedIcon sx={{ fontSize: 13, color: 'text.secondary' }} />
-              </Tooltip>
-            )}
-          </Box>
-          <Typography
-            variant="h4"
-            sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontSize: 34, lineHeight: 1, color: 'text.primary', my: 0.5 }}
-          >
-            {value}
-          </Typography>
-          {subLabel && (
-            <Typography variant="caption" sx={{ color: 'text.secondary', fontStyle: 'italic' }}>{subLabel}</Typography>
-          )}
-        </CardContent>
-      </Card>
-    </Grid>
-  )
-}
 
 export default function DailyView({ onSelectAgent, onSelectProperty }: Props) {
   const [window_, setWindow] = useState<number>(3)
@@ -91,8 +65,10 @@ export default function DailyView({ onSelectAgent, onSelectProperty }: Props) {
 
   if (loading && !data) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200 }}>
-        <CircularProgress size={28} sx={{ color: 'primary.main' }} />
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        <KpiCardSkeletonRow />
+        <TableSkeletonBlock rows={6} />
+        <TableSkeletonBlock rows={4} />
       </Box>
     )
   }
@@ -111,10 +87,11 @@ export default function DailyView({ onSelectAgent, onSelectProperty }: Props) {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       {/* Section 1 — KPI cards */}
       <Grid container spacing={1.5}>
-        <StatCard label="Arrivals Next 3 Days" value={kpi.arrivalsNext3d.toLocaleString()} subLabel="— need action (pending data source)" note={kpi.arrivalsNeedActionNote} />
-        <StatCard label="Provisionals Expiring This Week" value={kpi.provisionalsExpiring7d.toLocaleString()} />
-        <StatCard label="Expiring Provisionals Value" value={`$${expiringProvisionalsValue.toLocaleString()}`} note="Total booking value at risk from holds expiring this week" />
-        <StatCard label={`Booking Value — Upcoming Arrivals (T-${window_})`} value={`$${kpi.cashOutstanding.toLocaleString()}`} note={kpi.cashOutstandingNote} flagged />
+        <KpiCardShell label="Arrivals Next 3 Days" value={kpi.arrivalsNext3d.toLocaleString()} caption="— need action (pending data source)" labelInfo={kpi.arrivalsNeedActionNote} />
+        <KpiCardShell label="Provisionals Expiring This Week" value={kpi.provisionalsExpiring7d.toLocaleString()} />
+        <KpiCardShell label="Expiring Provisionals Value" value={`$${expiringProvisionalsValue.toLocaleString()}`} labelInfo="Total booking value at risk from holds expiring this week" />
+        {/* accent=amber preserves the original always-on caution flag — this card carries a data-quality caveat (see cashOutstandingNote), not a performance verdict */}
+        <KpiCardShell label={`Booking Value — Upcoming Arrivals (T-${window_})`} value={`$${kpi.cashOutstanding.toLocaleString()}`} labelInfo={kpi.cashOutstandingNote} accent="amber" />
       </Grid>
 
       {/* Window toggle + Consultant filter */}

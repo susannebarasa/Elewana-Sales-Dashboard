@@ -6,14 +6,24 @@ import Box from '@mui/material/Box'
 import type { DashboardData } from '@/types'
 import { buildExecutiveNarrative } from '@/lib/execNarrative'
 
-// Executive Story Panel (2026-07-09) — sits above the 4 KPI cards on Sales Executive Summary.
-// Deterministic, template-assembled narrative (see execNarrative.ts) — no LLM involved. Rendered
-// as one flowing paragraph rather than 4 separate bullets, since the sentences are meant to read
-// as a short briefing, not a checklist.
+// Executive Story Panel (2026-07-09, moved below the KPI row + given elevation 2026-07-16) — sits
+// under the 4 KPI cards on Sales Executive Summary (cards first, narrative second, per the design
+// pass). Deterministic, template-assembled narrative (see execNarrative.ts) — no LLM involved.
+// Rendered as one flowing paragraph rather than separate bullets, since the sentences are meant to
+// read as a short briefing, not a checklist. A tasteful drop shadow (not a heavy/skeuomorphic one)
+// lifts it slightly above the page, distinguishing it from the flat bordered cards around it.
 export default function ExecutiveStoryPanel({ data }: { data: DashboardData }) {
   const sentences = buildExecutiveNarrative(data)
   return (
-    <Card sx={{ mb: 1.5, bgcolor: '#FAF7F0', border: '0.5px solid', borderColor: 'divider' }}>
+    <Card
+      sx={{
+        mb: 1.5,
+        bgcolor: '#FAF7F0',
+        border: '0.5px solid',
+        borderColor: 'divider',
+        boxShadow: '0 4px 14px rgba(31,26,20,0.09)',
+      }}
+    >
       <CardContent>
         <Typography variant="overline" sx={{ display: 'block', mb: 0.5, color: 'text.secondary' }}>
           Executive Summary

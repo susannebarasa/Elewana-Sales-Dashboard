@@ -15,6 +15,7 @@ import {
 import type { ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
 import type { DashboardData, EntityClickContext } from '@/types'
+import EmptyState from '@/components/EmptyState'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 
@@ -33,7 +34,7 @@ const fmtDollar = (v: number): string =>
 // prior-year base to compare against (yoyPct null, shown as "—" in the table too).
 const YOY_UP = '#3B6D11'
 const YOY_DOWN = '#C0392B'
-const YOY_NONE = 'rgba(107,95,80,0.35)'
+const YOY_NONE = 'rgba(138,123,101,0.35)' // stone — no real prior-year base to compare against
 
 const CHART_OPTS = {
   responsive: true,
@@ -79,17 +80,21 @@ export default function MarketSegmentPerformanceView({ data, filters, onSelectSe
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-      <Card>
-        <CardContent>
-          <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Room Revenue by Market Segment</Typography>
-          <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
-            {filters.year} · green = YoY growth, red = YoY decline, gray = no prior-year base to compare · click a bar for detail
-          </Typography>
-          <Box sx={{ height: Math.max(180, rows.length * 32), position: 'relative' }}>
-            <Bar data={chartData} options={chartOptions} />
-          </Box>
-        </CardContent>
-      </Card>
+      {rows.length === 0 ? (
+        <EmptyState message="No market segments match this filter selection." />
+      ) : (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Room Revenue by Market Segment</Typography>
+            <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
+              {filters.year} · green = YoY growth, red = YoY decline, gray = no prior-year base to compare · click a bar for detail
+            </Typography>
+            <Box sx={{ height: Math.max(180, rows.length * 32), position: 'relative' }}>
+              <Bar data={chartData} options={chartOptions} />
+            </Box>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent>

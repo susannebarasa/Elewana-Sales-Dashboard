@@ -1,16 +1,19 @@
 import type { DashboardData } from '@/types'
 
-// Executive Story Panel (2026-07-09) — deterministic, template-based narrative for Sales
-// Executive Summary. NO LLM: every sentence is assembled from fields already computed elsewhere
-// on this dashboard (KP_BASE, REVPAR, AGENT_PACE, CANCEL_DRIVERS) — this is presentation logic
-// only, picking top/bottom N and formatting, never a new query or a new number.
+// Executive Story Panel (2026-07-09, shortened 2026-07-16) — deterministic, template-based
+// narrative for Sales Executive Summary. NO LLM: every sentence is assembled from fields already
+// computed elsewhere on this dashboard (KP_BASE, REVPAR, AGENT_PACE, CANCEL_DRIVERS) — this is
+// presentation logic only, picking top/bottom N and formatting, never a new query or a new number.
 //
 // Tone is tied to DATA SOURCE, not toggled per sentence by hand:
 //   - CONFIDENT (sentence 1): Room Revenue vs Budget — repeatedly verified today.
-//   - HEDGED (sentences 2-4): RevPAR, Agent Pace, Forecast, Cancellation Drivers — built/
-//     corrected today, less battle-tested. Each hedge phrase names WHY it's hedged (newly-
-//     corrected methodology / worth a follow-up review / not yet independently reviewed) rather
-//     than a generic "may be inaccurate" — the reader should know what's actually uncertain.
+//   - HEDGED (sentences 2-3): RevPAR, then Agent Pace + Forecast + Cancellation Drivers combined
+//     into one sentence — built/corrected today, less battle-tested. Each hedge phrase names WHY
+//     it's hedged (newly-corrected methodology / worth a follow-up review / not yet independently
+//     reviewed) rather than a generic "may be inaccurate" — the reader should know what's actually
+//     uncertain. Condensed from 4 sentences to 3 (2026-07-16 design pass) by merging the two most
+//     forward-looking/least-critical items (Agent Pace, Forecast+Cancellations) — no content
+//     dropped, just combined and tightened.
 
 const fmtM = (v: number): string => `$${v.toFixed(1)}M`
 const fmtWhole = (v: number): string => `$${Math.round(v).toLocaleString()}`
@@ -57,35 +60,31 @@ function sentence2(data: DashboardData): string {
   const revenueRank = byRevenue.findIndex((r) => r.propertyName === softest.propertyName)
   const suffix = revenueRank !== -1 && revenueRank < 3 ? ' despite being one of the higher-revenue properties by volume' : ''
 
-  return `Early RevPAR signals — based on newly-corrected methodology — point to ${top2Str} leading the portfolio, while ${softest.propertyName} (${fmtWhole(softest.revpar as number)}) is the softest performer${suffix}.`
+  return `Early RevPAR figures (newly-corrected methodology) point to ${top2Str} leading the portfolio, while ${softest.propertyName} (${fmtWhole(softest.revpar as number)}) is the softest performer${suffix}.`
 }
 
-// Sentence 3 (HEDGED) — Agent Pace, 2 fastest + 2 softening. AGENT_PACE.gainers/decliners are
-// already sorted by absVar (see route.ts) — just take the top 2 of each, no re-sorting needed.
+// Sentence 3 (HEDGED, combined 2026-07-16) — Agent Pace movers + Forecast + top Cancellation
+// Driver in one sentence: the two most forward-looking, least-battle-tested items, merged to get
+// the panel to 3 sentences without dropping content. AGENT_PACE.gainers/decliners are already
+// sorted by absVar (see route.ts) — just take the top 2 of each. execPace.vsForecast's own `d`
+// field already carries the exact month range this ratio covers — reused verbatim.
 function sentence3(data: DashboardData): string {
   const gainers = data.AGENT_PACE.gainers.slice(0, 2)
   const decliners = data.AGENT_PACE.decliners.slice(0, 2)
-  if (gainers.length === 0 && decliners.length === 0) {
-    return 'Agent Pace has no agents meeting the minimum-volume threshold this period to call out gainers or decliners.'
-  }
-  const gainersStr = gainers.map((a) => `${a.agentName} (+${a.absVar.toLocaleString()} nights)`).join(' and ')
-  const declinersStr = decliners.map((a) => `${a.agentName} (${a.absVar.toLocaleString()} nights)`).join(' and ')
-  return `Agent Pace shows ${gainersStr} growing fastest, while ${declinersStr} are softening — worth a follow-up review before drawing conclusions.`
-}
+  const paceClause = gainers.length === 0 && decliners.length === 0
+    ? 'no agents meet the minimum-volume threshold this period to call out gainers or decliners'
+    : `${gainers.map((a) => `${a.agentName} (+${a.absVar.toLocaleString()} nights)`).join(' and ')} are growing fastest while ${decliners.map((a) => `${a.agentName} (${a.absVar.toLocaleString()} nights)`).join(' and ')} are softening`
 
-// Sentence 4 (HEDGED) — Forecast + top Cancellation Driver. execPace.vsForecast's own `d` field
-// already carries the exact month range this ratio covers (e.g. "Aug 2026–Oct 2026 forecast vs
-// budget") — reused verbatim rather than re-deriving month labels here.
-function sentence4(data: DashboardData): string {
   const fc = data.KP_BASE.execPace.vsForecast
   const monthRange = fc.d.replace(' forecast vs budget', '')
   const top = data.CANCEL_DRIVERS[0]
-  const topStr = top
-    ? `${top.agentName} is the leading cancellation driver over the last 30 days (${fmtK1(top.revenueLost)} lost across ${top.cancelledBookings.toLocaleString()} bookings)`
+  const cancelClause = top
+    ? `${top.agentName} leads cancellations over the last 30 days (${fmtK1(top.revenueLost)} across ${top.cancelledBookings.toLocaleString()} bookings)`
     : 'no material cancellation drivers stand out over the last 30 days'
-  return `The forward forecast for ${monthRange} is tracking at ${fc.v.toFixed(1)}% of budget, and ${topStr} — both based on methodology finalized today and not yet independently reviewed.`
+
+  return `Agent Pace-wise, ${paceClause} — worth a follow-up review; the forward forecast for ${monthRange} is tracking at ${fc.v.toFixed(1)}% of budget, and ${cancelClause}, both based on methodology finalized today and not yet independently reviewed.`
 }
 
 export function buildExecutiveNarrative(data: DashboardData): string[] {
-  return [sentence1(data), sentence2(data), sentence3(data), sentence4(data)]
+  return [sentence1(data), sentence2(data), sentence3(data)]
 }

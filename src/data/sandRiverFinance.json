@@ -1,0 +1,58 @@
+{
+  "property": {
+    "name": "Sand River Mara Eco Camp",
+    "propertyId": "WB640",
+    "operatorLabel": "Operated by Elewana Collection"
+  },
+  "reportPeriod": null,
+  "kpis": {
+    "m": {
+      "netRevenue": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "contributionToHO": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "ebitda": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "netProfit": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null }
+    },
+    "y": {
+      "netRevenue": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "contributionToHO": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "ebitda": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "netProfit": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null }
+    },
+    "a": {
+      "netRevenue": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "contributionToHO": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "ebitda": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null },
+      "netProfit": { "status": "ndl", "value": null, "budget": null, "varianceAbs": null, "variancePct": null, "rag": null }
+    }
+  },
+  "narrative": null,
+  "charts": {
+    "cumulativeRevenuePace": "ndl",
+    "monthlyCostStack": "ndl",
+    "netProfitWaterfall": "ndl"
+  },
+  "plLines": [
+    { "key": "grossRevenue",     "label": "Total Gross Revenue",        "section": "revenue", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "netRoomRevenue",   "label": "Total Net Room Revenue",     "section": "revenue", "detailOnly": true,  "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "netExtraSales",    "label": "Total Net Extra Sales",      "section": "revenue", "detailOnly": true,  "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "netRevenue",       "label": "Total Net Revenue",          "section": "revenue", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+
+    { "key": "variableCosts",    "label": "Variable Costs Sub Total",   "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "staffCosts",       "label": "Total Staff Cost",           "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "fixedCosts",       "label": "Fixed Cost Sub Total",       "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "otherCosts",       "label": "Other Cost Sub Total",       "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "managedCosts",     "label": "Managed Costs",              "section": "costs", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "imposedCosts",     "label": "Imposed Costs",              "section": "costs", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+
+    { "key": "contribution",    "label": "Contribution",               "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "hoCosts",         "label": "HO Costs",                    "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "ebitda",          "label": "EBITDA",                      "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "da",              "label": "D&A",                         "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "financeCost",     "label": "Finance Cost",                "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "nop",             "label": "NOP",                         "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": null, "variance": null },
+
+    { "key": "topDriver1",      "label": "Top revenue/cost driver #1 (TBD)", "section": "drivers", "detailOnly": true, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "topDriver2",      "label": "Top revenue/cost driver #2 (TBD)", "section": "drivers", "detailOnly": true, "status": "ndl", "value": null, "budget": null, "variance": null },
+    { "key": "topDriver3",      "label": "Top revenue/cost driver #3 (TBD)", "section": "drivers", "detailOnly": true, "status": "ndl", "value": null, "budget": null, "variance": null }
+  ]
+}

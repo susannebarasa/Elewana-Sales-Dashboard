@@ -40,7 +40,7 @@ export default function AgentsView({ data, filters, onSelectAgentPerformance, on
     labels: data.AD.byMonth.months,
     datasets: [
       { label: filters.year, data: data.AD.byMonth.act, borderColor: '#B7632A', backgroundColor: 'rgba(183,99,42,0.1)', borderWidth: 2, tension: 0.3, pointRadius: 3 },
-      { label: 'LY', data: data.AD.byMonth.ly, borderColor: 'rgba(107,95,80,0.5)', backgroundColor: 'transparent', borderWidth: 1.5, tension: 0.3, pointRadius: 2, borderDash: [4, 3] },
+      { label: 'LY', data: data.AD.byMonth.ly, borderColor: 'rgba(138,123,101,0.8)', backgroundColor: 'transparent', borderWidth: 1.5, tension: 0.3, pointRadius: 2, borderDash: [4, 3] },
       { label: 'Extras', data: data.AD.byMonth.extras, borderColor: '#4A5A3A', backgroundColor: 'transparent', borderWidth: 1.5, tension: 0.3, pointRadius: 2, borderDash: [2, 2] },
     ],
   }
@@ -50,7 +50,7 @@ export default function AgentsView({ data, filters, onSelectAgentPerformance, on
     labels: top10ByProp.map((p) => p.pr),
     datasets: [
       { label: filters.year, data: top10ByProp.map((p) => p.rv), backgroundColor: 'rgba(183,99,42,0.7)', borderRadius: 3 },
-      { label: 'LY', data: top10ByProp.map((p) => p.ly), backgroundColor: 'rgba(107,95,80,0.35)', borderRadius: 3 },
+      { label: 'LY', data: top10ByProp.map((p) => p.ly), backgroundColor: 'rgba(138,123,101,0.45)', borderRadius: 3 },
       { label: 'Extras', data: top10ByProp.map((p) => p.extras), backgroundColor: 'rgba(74,90,58,0.6)', borderRadius: 3 },
     ],
   }

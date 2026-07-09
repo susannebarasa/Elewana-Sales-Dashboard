@@ -39,7 +39,7 @@ function SummaryStat({ label, value, chg, note }: { label: string; value: string
           <Typography variant="overline" sx={{ display: 'block' }}>{label}</Typography>
           <Typography
             variant="h4"
-            sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontSize: 26, lineHeight: 1, color: 'text.primary', my: 0.5 }}
+            sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 700, fontSize: 26, lineHeight: 1, color: 'text.primary', my: 0.5 }}
           >
             {value}
           </Typography>

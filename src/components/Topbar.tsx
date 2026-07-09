@@ -61,7 +61,15 @@ const SUBS = [
   { id: 'pl', label: 'Pipeline' },
   { id: 'cn', label: 'Consultants' },
   { id: 'daily', label: 'Daily' },
+  { id: 'finance', label: 'Finance' },
 ]
+
+// Finance (2026-07-16) — single-property MIS data, entirely independent of the shared
+// /api/dashboard payload (no year/period/channel/market/property dimension at all — it has its
+// own internal MTD/YTD/Annualised toggle instead). Explicitly hiding the global filter cluster
+// here (per user decision) rather than leaving it visible-but-inert, same reasoning already
+// applied to Property Performance ignoring most of these, just made explicit instead of silent.
+const HIDE_FILTERS_FOR_SUBS = new Set(['finance'])
 
 const YEARS = ['2022', '2023', '2024', '2025', '2026', '2027', '2028']
 
@@ -156,89 +164,93 @@ export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdat
             {VIEW_TITLES[view] ?? view}
           </Typography>
 
-          <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+          {!HIDE_FILTERS_FOR_SUBS.has(sub) && (
+            <>
+              <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
 
-          {/* Period toggle */}
-          <ToggleButtonGroup
-            value={filters.period}
-            exclusive
-            onChange={(_, v) => v && set('period', v)}
-            size="small"
-            sx={{
-              bgcolor: 'background.default',
-              border: '0.5px solid',
-              borderColor: 'divider',
-              borderRadius: 1,
-              p: '2px',
-              gap: 0,
-              '& .MuiToggleButtonGroup-grouped': {
-                border: 'none',
-                '&.Mui-selected': {
-                  bgcolor: 'text.primary',
-                  color: 'background.paper',
-                  '&:hover': { bgcolor: 'text.primary' },
-                },
-              },
-            }}
-          >
-            {(['m', 'y', 'a'] as const).map((p) => (
-              <ToggleButton key={p} value={p} sx={{ lineHeight: 1 }}>
-                {p.toUpperCase()}
-              </ToggleButton>
-            ))}
-          </ToggleButtonGroup>
+              {/* Period toggle */}
+              <ToggleButtonGroup
+                value={filters.period}
+                exclusive
+                onChange={(_, v) => v && set('period', v)}
+                size="small"
+                sx={{
+                  bgcolor: 'background.default',
+                  border: '0.5px solid',
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  p: '2px',
+                  gap: 0,
+                  '& .MuiToggleButtonGroup-grouped': {
+                    border: 'none',
+                    '&.Mui-selected': {
+                      bgcolor: 'text.primary',
+                      color: 'background.paper',
+                      '&:hover': { bgcolor: 'text.primary' },
+                    },
+                  },
+                }}
+              >
+                {(['m', 'y', 'a'] as const).map((p) => (
+                  <ToggleButton key={p} value={p} sx={{ lineHeight: 1 }}>
+                    {p.toUpperCase()}
+                  </ToggleButton>
+                ))}
+              </ToggleButtonGroup>
 
-          {/* Year */}
-          <Select
-            value={filters.year}
-            onChange={(e) => set('year', e.target.value)}
-            size="small"
-            variant="outlined"
-            sx={selectSx}
-          >
-            {YEARS.map((y) => (
-              <MenuItem key={y} value={y} sx={{ fontSize: '0.6875rem' }}>{y}</MenuItem>
-            ))}
-          </Select>
+              {/* Year */}
+              <Select
+                value={filters.year}
+                onChange={(e) => set('year', e.target.value)}
+                size="small"
+                variant="outlined"
+                sx={selectSx}
+              >
+                {YEARS.map((y) => (
+                  <MenuItem key={y} value={y} sx={{ fontSize: '0.6875rem' }}>{y}</MenuItem>
+                ))}
+              </Select>
 
-          {/* Channel */}
-          <Select
-            value={filters.channel}
-            onChange={(e) => set('channel', e.target.value)}
-            size="small"
-            variant="outlined"
-            sx={selectSx}
-          >
-            {CHANNELS.map((c) => (
-              <MenuItem key={c.value} value={c.value} sx={{ fontSize: '0.6875rem' }}>{c.label}</MenuItem>
-            ))}
-          </Select>
+              {/* Channel */}
+              <Select
+                value={filters.channel}
+                onChange={(e) => set('channel', e.target.value)}
+                size="small"
+                variant="outlined"
+                sx={selectSx}
+              >
+                {CHANNELS.map((c) => (
+                  <MenuItem key={c.value} value={c.value} sx={{ fontSize: '0.6875rem' }}>{c.label}</MenuItem>
+                ))}
+              </Select>
 
-          {/* Market Segment */}
-          <Select
-            value={filters.market}
-            onChange={(e) => set('market', e.target.value)}
-            size="small"
-            variant="outlined"
-            sx={selectSx}
-          >
-            {MARKET_SEGMENTS.map((m) => (
-              <MenuItem key={m.value} value={m.value} sx={{ fontSize: '0.6875rem' }}>{m.label}</MenuItem>
-            ))}
-          </Select>
+              {/* Market Segment */}
+              <Select
+                value={filters.market}
+                onChange={(e) => set('market', e.target.value)}
+                size="small"
+                variant="outlined"
+                sx={selectSx}
+              >
+                {MARKET_SEGMENTS.map((m) => (
+                  <MenuItem key={m.value} value={m.value} sx={{ fontSize: '0.6875rem' }}>{m.label}</MenuItem>
+                ))}
+              </Select>
 
-          {/* Property */}
-          <Select
-            value={filters.property}
-            onChange={(e) => set('property', e.target.value)}
-            size="small"
-            variant="outlined"
-            sx={selectSx}
-          >
-            {PROPERTIES.map((p) => (
-              <MenuItem key={p.value} value={p.value} sx={{ fontSize: '0.6875rem' }}>{p.label}</MenuItem>
-            ))}
-          </Select>
+              {/* Property */}
+              <Select
+                value={filters.property}
+                onChange={(e) => set('property', e.target.value)}
+                size="small"
+                variant="outlined"
+                sx={selectSx}
+              >
+                {PROPERTIES.map((p) => (
+                  <MenuItem key={p.value} value={p.value} sx={{ fontSize: '0.6875rem' }}>{p.label}</MenuItem>
+                ))}
+              </Select>
+            </>
+          )}
 
           <Box sx={{ flex: 1 }} />
 
@@ -278,21 +290,41 @@ export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdat
         </Toolbar>
       </AppBar>
 
-      {/* Sub-nav tabs (Sales only) */}
+      {/* Sub-nav tabs (Sales only) — subtle 3D/elevated treatment (2026-07-16 design pass), same
+          "lifts slightly" principle as ExecutiveStoryPanel's shadow, scaled down for a small,
+          constantly-clicked nav element. The active tab lifts + gets a soft shadow + a raised
+          background so it clearly reads as "pressed forward"; inactive tabs stay flat/muted and
+          only nudge up a hair on hover, enough to confirm clickability without competing with the
+          active tab for attention. */}
       {view === 'sales' && (
         <Tabs
           value={sub}
           onChange={(_, v) => onSub(v)}
-          slotProps={{ indicator: { style: { backgroundColor: '#B7632A' } } }}
+          slotProps={{ indicator: { style: { backgroundColor: '#B7632A', height: 2 } } }}
           sx={{
-            bgcolor: 'background.paper',
+            bgcolor: 'background.default',
             borderBottom: '0.5px solid',
             borderColor: 'divider',
             minHeight: 38,
             px: 2,
+            pt: '4px',
+            '& .MuiTabs-flexContainer': { gap: '2px' },
             '& .MuiTab-root': {
               color: 'text.secondary',
-              '&.Mui-selected': { color: 'primary.main' },
+              bgcolor: 'transparent',
+              borderRadius: '8px 8px 0 0',
+              transition: 'transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease',
+              '&:hover': {
+                bgcolor: 'rgba(183,99,42,0.06)',
+                transform: 'translateY(-1px)',
+              },
+              '&.Mui-selected': {
+                color: 'primary.main',
+                fontWeight: 600,
+                bgcolor: 'background.paper',
+                boxShadow: '0 -2px 8px rgba(31,26,20,0.08)',
+                transform: 'translateY(-2px)',
+              },
             },
           }}
         >

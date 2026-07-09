@@ -16,7 +16,7 @@ import {
 } from 'chart.js'
 import { Line, Bar } from 'react-chartjs-2'
 import type { DashboardData, EntityClickContext } from '@/types'
-import KpiRow, { fmtK } from '@/components/KpiRow'
+import KpiRow, { fmtK, budgetVariance } from '@/components/KpiRow'
 import MiniStatRow from '@/components/MiniStatRow'
 import { propertyBarClickOptions } from '@/lib/chartClicks'
 
@@ -53,7 +53,7 @@ export default function PaceView({ data, filters, onSelectProperty }: Props) {
       {
         label: 'LY',
         data: data.PD.ly,
-        borderColor: 'rgba(107,95,80,0.5)',
+        borderColor: 'rgba(138,123,101,0.8)',
         backgroundColor: 'transparent',
         borderWidth: 1.5,
         tension: 0.3,
@@ -100,8 +100,8 @@ export default function PaceView({ data, filters, onSelectProperty }: Props) {
           </Typography>
           <MiniStatRow
             items={[
-              { label: 'MTD vs Budget', value: fmtK(kp.budgetMtd.v, kp.budgetMtd.fmt), tooltip: kp.budgetMtd.d },
-              { label: 'YTD vs Budget', value: fmtK(kp.budgetYtd.v, kp.budgetYtd.fmt), tooltip: kp.budgetYtd.d },
+              { label: 'MTD vs Budget', value: fmtK(kp.budgetMtd.v, kp.budgetMtd.fmt), variance: budgetVariance(kp.budgetMtd), tooltip: kp.budgetMtd.d },
+              { label: 'YTD vs Budget', value: fmtK(kp.budgetYtd.v, kp.budgetYtd.fmt), variance: budgetVariance(kp.budgetYtd), tooltip: kp.budgetYtd.d },
             ]}
           />
           <Box sx={{ overflowX: 'auto' }}>
@@ -276,7 +276,7 @@ export default function PaceView({ data, filters, onSelectProperty }: Props) {
                   <Typography variant="caption">{filters.year}</Typography>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  <Box sx={{ width: 12, height: 2, bgcolor: 'rgba(107,95,80,0.5)', borderRadius: 1 }} />
+                  <Box sx={{ width: 12, height: 2, bgcolor: 'rgba(138,123,101,0.8)', borderRadius: 1 }} />
                   <Typography variant="caption">LY</Typography>
                 </Box>
               </Box>
