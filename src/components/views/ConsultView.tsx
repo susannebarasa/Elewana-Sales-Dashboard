@@ -34,7 +34,8 @@ export default function ConsultView({ data, filters }: Props) {
                 <TableRow>
                   <TableCell>Consultant</TableCell>
                   <TableCell align="right">Bookings</TableCell>
-                  <TableCell align="right">Revenue ($k)</TableCell>
+                  <TableCell align="right">Room Revenue ($k)</TableCell>
+                  <TableCell align="right">Extras ($k)</TableCell>
                   <TableCell align="right">Share</TableCell>
                   <TableCell align="center">YoY</TableCell>
                 </TableRow>
@@ -47,6 +48,7 @@ export default function ConsultView({ data, filters }: Props) {
                     </TableCell>
                     <TableCell align="right">{c.bk.toLocaleString()}</TableCell>
                     <TableCell align="right">${c.rv.toLocaleString()}k</TableCell>
+                    <TableCell align="right">${c.extras.toLocaleString()}k</TableCell>
                     <TableCell align="right">{c.cv}</TableCell>
                     <TableCell align="center">
                       <Chip

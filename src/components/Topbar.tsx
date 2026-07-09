@@ -13,12 +13,16 @@ import Divider from '@mui/material/Divider'
 import IconButton from '@mui/material/IconButton'
 import MenuIcon from '@mui/icons-material/Menu'
 import MenuOpenIcon from '@mui/icons-material/MenuOpen'
+import FindAgentSearch from '@/components/FindAgentSearch'
+import type { AgentSearchResult } from '@/types'
+import { PROPERTY_ROOM_COUNTS } from '@/lib/constants'
 
 interface Filters {
   period: 'm' | 'y' | 'a'
   year: string
   channel: string
   market: string
+  property: string
 }
 
 type Props = {
@@ -30,6 +34,8 @@ type Props = {
   lastUpdated: string
   sidebarOpen: boolean
   onToggleSidebar: () => void
+  onSelectAgent: (agentId: string) => void
+  agentDefaultOptions: AgentSearchResult[]
 }
 
 const VIEW_TITLES: Record<string, string> = {
@@ -41,22 +47,59 @@ const VIEW_TITLES: Record<string, string> = {
   mis: 'MIS',
 }
 
+// Nav consolidation (2026-07-09) — all 10 previously-scattered views (4 former standalone
+// Sidebar entries + the existing 6 Sales sub-tabs) now live here as one ordered list, per the
+// user's explicit order. Daily moved to the end (deprioritized, not removed).
 const SUBS = [
+  { id: 'exec-summary', label: 'Sales Executive Summary' },
+  { id: 'property-performance', label: 'Property Performance' },
+  { id: 'market-segment-performance', label: 'Market Segment Performance' },
+  { id: 'booking-status-movement', label: 'Booking Status Movement' },
+  { id: 'tp', label: 'Trade Partners' },
   { id: 'pace', label: 'Pace' },
   { id: 'occ', label: 'Occupancy' },
-  { id: 'tp', label: 'Trade Partners' },
   { id: 'pl', label: 'Pipeline' },
   { id: 'cn', label: 'Consultants' },
+  { id: 'daily', label: 'Daily' },
 ]
 
 const YEARS = ['2022', '2023', '2024', '2025', '2026', '2027', '2028']
 
+// Values match src/lib/agentSegments.ts's CHANNEL_VALUES exactly (Faith's segment mapping CSV's
+// "Channel" column: B2B / B2C / NON REVENUE SEGMENTS, plus Unallocated for agents with no CSV
+// row or a blank cell — a real, known classification gap, always shown as its own option, never
+// hidden or defaulted away).
 const CHANNELS = [
   { value: 'all', label: 'All Channels' },
-  { value: 'b2b', label: 'B2B' },
-  { value: 'b2c', label: 'B2C' },
-  { value: 'nonrev', label: 'Non-Rev' },
-  { value: 'unalloc', label: 'Unallocated' },
+  { value: 'B2B', label: 'B2B' },
+  { value: 'B2C', label: 'B2C' },
+  { value: 'NON REVENUE SEGMENTS', label: 'Non-Revenue' },
+  { value: 'Unallocated', label: 'Unallocated' },
+]
+
+// Values match src/lib/agentSegments.ts's MARKET_SEGMENT_VALUES exactly (the CSV's "New Market
+// Segment" column, confirmed 13 July 2026 — NOT the more verbose "Market Segment" column).
+const MARKET_SEGMENTS = [
+  { value: 'all', label: 'All Segments' },
+  { value: 'INT. AGENT', label: 'Int. Agent' },
+  { value: 'DMC', label: 'DMC' },
+  { value: 'DMC (International Presence)', label: 'DMC (Int’l Presence)' },
+  { value: 'INT. DIRECT', label: 'Int. Direct' },
+  { value: 'LOCAL DIRECT', label: 'Local Direct' },
+  { value: 'CLOSED USER GROUPS', label: 'Closed User Groups' },
+  { value: 'DIGITAL', label: 'Digital' },
+  { value: 'STAFF STAYS', label: 'Staff Stays' },
+  { value: 'Unallocated', label: 'Unallocated' },
+]
+
+// Property (2026-07-09) — same PROPERTY_ROOM_COUNTS source of truth as the Property Performance
+// table/RevPAR-by-property. Little Elephant Pepper Camp excluded (propertyId null, mid-
+// construction, no ResRequest record to filter by yet — same caveat as everywhere else it appears).
+const PROPERTIES = [
+  { value: 'all', label: 'All Properties' },
+  ...Object.entries(PROPERTY_ROOM_COUNTS)
+    .filter(([, cap]) => cap.propertyId !== null)
+    .map(([name, cap]) => ({ value: cap.propertyId as string, label: name })),
 ]
 
 const selectSx = {
@@ -66,7 +109,7 @@ const selectSx = {
   '.MuiSelect-select': { py: '4px', px: '8px' },
 }
 
-export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdated, sidebarOpen, onToggleSidebar }: Props) {
+export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdated, sidebarOpen, onToggleSidebar, onSelectAgent, agentDefaultOptions }: Props) {
   const set = (k: keyof Filters, v: string) => onFilters({ ...filters, [k]: v })
 
   return (
@@ -171,7 +214,39 @@ export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdat
             ))}
           </Select>
 
+          {/* Market Segment */}
+          <Select
+            value={filters.market}
+            onChange={(e) => set('market', e.target.value)}
+            size="small"
+            variant="outlined"
+            sx={selectSx}
+          >
+            {MARKET_SEGMENTS.map((m) => (
+              <MenuItem key={m.value} value={m.value} sx={{ fontSize: '0.6875rem' }}>{m.label}</MenuItem>
+            ))}
+          </Select>
+
+          {/* Property */}
+          <Select
+            value={filters.property}
+            onChange={(e) => set('property', e.target.value)}
+            size="small"
+            variant="outlined"
+            sx={selectSx}
+          >
+            {PROPERTIES.map((p) => (
+              <MenuItem key={p.value} value={p.value} sx={{ fontSize: '0.6875rem' }}>{p.label}</MenuItem>
+            ))}
+          </Select>
+
           <Box sx={{ flex: 1 }} />
+
+          {/* Find Agent — Sales only, room to the left of the timestamp so it never
+              overlaps the content area's KPI row below */}
+          {view === 'sales' && (
+            <FindAgentSearch onSelectAgent={onSelectAgent} defaultOptions={agentDefaultOptions} />
+          )}
 
           {/* Timestamp */}
           {lastUpdated && (

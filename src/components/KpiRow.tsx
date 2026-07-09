@@ -6,7 +6,7 @@ import Box from '@mui/material/Box'
 import Grid from '@mui/material/Grid'
 import type { KpiMetric } from '@/types'
 
-function fmtK(v: number, fmt: string): string {
+export function fmtK(v: number, fmt: string): string {
   if (fmt === 'int')  return v >= 10000 ? Math.round(v / 1000) + 'k' : Math.round(v).toLocaleString()
   if (fmt === '$M')   return v >= 1 ? '$' + v.toFixed(1) + 'M' : '$' + (v * 1000).toFixed(0) + 'k'
   if (fmt === '$')    return '$' + Math.round(v).toLocaleString()
@@ -38,10 +38,14 @@ export default function KpiRow({ metrics, propMult = 1, periodMult = 1 }: Props)
         const ps = isRate || isADR ? 1 + (propMult - 1) * 0.22 : propMult
         const ts = isRate || isADR ? 1 + (periodMult - 1) * 0.015 : periodMult
         const sv  = m.v * ps * ts
-        const lv  = sv * 0.912
+        // Only show a YoY % when a real prior-year value exists (m.ly) — never
+        // fabricate one. hasLy also excludes ly<=0 to avoid a divide-by-zero/
+        // meaningless ratio.
+        const hasLy = typeof m.ly === 'number' && m.ly > 0
+        const lv = hasLy ? (m.ly as number) * ps * ts : undefined
         const r   = rag(m, sv)
-        const chg = ((sv - lv) / lv) * 100
-        const chgStr = (chg >= 0 ? '+' : '') + chg.toFixed(1) + '%'
+        const chg = hasLy ? ((sv - (lv as number)) / (lv as number)) * 100 : undefined
+        const chgStr = chg !== undefined ? (chg >= 0 ? '+' : '') + chg.toFixed(1) + '%' : undefined
 
         const borderColor = r === 'green' ? 'success.main' : r === 'red' ? 'error.main' : 'warning.main'
         const bgColor     = r === 'green' ? '#F2F8EE'       : r === 'red' ? '#FEF2F2'    : '#FDF8EE'
@@ -59,10 +63,31 @@ export default function KpiRow({ metrics, propMult = 1, periodMult = 1 }: Props)
                   {fmtK(sv, m.fmt)}
                 </Typography>
                 <Typography variant="caption">
-                  {m.d} ·{' '}
-                  <Box component="span" sx={{ fontWeight: 700, color: chgColor }}>
-                    {chgStr}
-                  </Box>
+                  {m.d}
+                  {chgStr !== undefined && (
+                    <>
+                      {' '}·{' '}
+                      {m.stly && (
+                        <Box
+                          component="span"
+                          sx={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.5, color: 'text.secondary', border: '0.5px solid', borderColor: 'divider', borderRadius: 0.5, px: 0.4, mr: 0.5, verticalAlign: 1 }}
+                        >
+                          STLY
+                        </Box>
+                      )}
+                      {m.budget && (
+                        <Box
+                          component="span"
+                          sx={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.5, color: 'text.secondary', border: '0.5px solid', borderColor: 'divider', borderRadius: 0.5, px: 0.4, mr: 0.5, verticalAlign: 1 }}
+                        >
+                          BUDGET
+                        </Box>
+                      )}
+                      <Box component="span" sx={{ fontWeight: 700, color: chgColor }}>
+                        {chgStr}
+                      </Box>
+                    </>
+                  )}
                 </Typography>
               </CardContent>
             </Card>
