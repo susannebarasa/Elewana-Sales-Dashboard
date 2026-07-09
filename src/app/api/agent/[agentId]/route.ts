@@ -2,6 +2,14 @@ export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
 import { query, queryOne } from '@/lib/db'
+import {
+  dateInYearMonthRange,
+  dateInTwoYearMonthRange,
+  dateInYearThroughMonth,
+  dateInTwoYearsThroughMonth,
+  dateInFullYear,
+  caseInYearMonthRange,
+} from '@/lib/dateRange'
 import type { AgentProfile, AgentPropertyBreakdown, AgentConfirmedArrival, AgentProvisionalBooking, AgentSummaryKpis, AgentCancellationItem } from '@/types'
 import {
   NON_REVENUE_RATE_TYPE_IDS,
@@ -79,20 +87,20 @@ export async function GET(
       // by-month query below, in JS.
       query<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>(
         `SELECT MONTH(r.date_created) AS m, LEFT(MONTHNAME(r.date_created),3) AS mn,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS act,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${dateInFullYear('r.date_created', cy)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS act,
+          SUM(CASE WHEN ${dateInFullYear('r.date_created', ly)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
+          SUM(CASE WHEN ${dateInFullYear('r.date_created', cy)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${dateInFullYear('r.date_created', ly)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
         FROM reservations r
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status = '30' AND r.agent_id = ?
-          AND YEAR(r.date_created) IN (?,?)
+          AND ((${dateInFullYear('r.date_created', cy)}) OR (${dateInFullYear('r.date_created', ly)}))
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
         GROUP BY MONTH(r.date_created), LEFT(MONTHNAME(r.date_created),3) ORDER BY m`,
-        [cy, KES_RATE, ly, KES_RATE, cy, KES_RATE, ly, KES_RATE, agentId, cy, ly, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, KES_RATE, KES_RATE, KES_RATE, agentId, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
@@ -101,15 +109,15 @@ export async function GET(
       // FIX (2026-07-13, extras-table revenue): broadened beyond Day Use.
       query<{ m: number; extras: number; extras_ly: number }>(
         `SELECT MONTH(r.date_created) AS m,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${dateInFullYear('r.date_created', cy)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${dateInFullYear('r.date_created', ly)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
         FROM itineraries i
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND r.agent_id = ? AND YEAR(r.date_created) IN (?,?)
+        WHERE r.status='30' AND r.agent_id = ? AND ((${dateInFullYear('r.date_created', cy)}) OR (${dateInFullYear('r.date_created', ly)}))
         GROUP BY MONTH(r.date_created)`,
-        [cy, KES_RATE, ly, KES_RATE, agentId, cy, ly]
+        [KES_RATE, KES_RATE, agentId]
       ),
 
       // Property breakdown — mirrors AD.byProp (itinerary-level total_gross_amount,
@@ -133,12 +141,12 @@ export async function GET(
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN properties p ON i.property=p.property_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status IN ('20','30') AND r.agent_id = ? AND YEAR(r.date_created)=?
+        WHERE r.status IN ('20','30') AND r.agent_id = ? AND ${dateInFullYear('r.date_created', cy)}
           AND i.property IS NOT NULL
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
         GROUP BY i.property, COALESCE(p.name, i.property) ORDER BY rv DESC LIMIT 10`,
-        [KES_RATE, KES_RATE, agentId, cy, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, KES_RATE, agentId, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
@@ -152,9 +160,9 @@ export async function GET(
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND r.agent_id = ? AND YEAR(r.date_created)=?
+        WHERE r.status='30' AND r.agent_id = ? AND ${dateInFullYear('r.date_created', cy)}
         GROUP BY i.property`,
-        [KES_RATE, agentId, cy]
+        [KES_RATE, agentId]
       ),
 
       // Confirmed arrivals — status='30' only, arrival (i.date_in) within the next 30
@@ -249,7 +257,7 @@ export async function GET(
             JOIN itineraries i ON r.reservation_number = i.reservation_number
             WHERE r.agent_id = ?
               AND (r.status IN ('20','30') OR (r.status='90' AND r.prov_date IS NOT NULL))
-              AND YEAR(i.date_in)=?
+              AND ${dateInFullYear('i.date_in', cy)}
               AND r.rate_type NOT IN (?)
               AND r.reservation_number NOT LIKE ?
           ) deduped
@@ -260,7 +268,7 @@ export async function GET(
           JOIN itineraries i ON r.reservation_number = i.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.agent_id = ? AND r.status='30' AND YEAR(i.date_in)=?
+          WHERE r.agent_id = ? AND r.status='30' AND ${dateInFullYear('i.date_in', cy)}
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) rev
@@ -270,12 +278,21 @@ export async function GET(
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.agent_id = ? AND r2.status='30' AND YEAR(i2.date_in)=?
+          WHERE r2.agent_id = ? AND r2.status='30' AND ${dateInFullYear('i2.date_in', cy)}
             AND ((i2.property='WB2909' AND i2.accommodation_type='WB17') OR (i2.property='RS8' AND i2.accommodation_type='WB22'))
         ) dayuse`,
-        [agentId, cy, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, KES_RATE, agentId, cy, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, agentId, cy]
+        [
+          agentId,
+          NON_REV_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          KES_RATE,
+          agentId,
+          NON_REV_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          agentId
+        ]
       ),
 
       // Same pool, prior year — real YoY basis for Revenue YTD only (the other 3
@@ -289,7 +306,7 @@ export async function GET(
           JOIN itineraries i ON r.reservation_number = i.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.agent_id = ? AND r.status='30' AND YEAR(i.date_in)=?
+          WHERE r.agent_id = ? AND r.status='30' AND ${dateInFullYear('i.date_in', ly)}
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) rev
@@ -299,11 +316,10 @@ export async function GET(
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.agent_id = ? AND r2.status='30' AND YEAR(i2.date_in)=?
+          WHERE r2.agent_id = ? AND r2.status='30' AND ${dateInFullYear('i2.date_in', ly)}
             AND ((i2.property='WB2909' AND i2.accommodation_type='WB17') OR (i2.property='RS8' AND i2.accommodation_type='WB22'))
         ) dayuse`,
-        [KES_RATE, KES_RATE, agentId, ly, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, agentId, ly]
+        [KES_RATE, KES_RATE, agentId, NON_REV_IDS, RES_PREFIX, KES_RATE, agentId]
       ),
 
       // Room Nights + ADR — mirrors dashboard/route.ts's kpiRevNights exactly (status='30'
@@ -321,7 +337,7 @@ export async function GET(
         FROM (
           SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-          WHERE r.agent_id = ? AND r.status='30' AND YEAR(i.date_in)=? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.agent_id = ? AND r.status='30' AND ${dateInFullYear('i.date_in', cy)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) nights
@@ -330,12 +346,11 @@ export async function GET(
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.agent_id = ? AND r.status='30' AND YEAR(i.date_in)=? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.agent_id = ? AND r.status='30' AND ${dateInFullYear('i.date_in', cy)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) rev`,
-        [agentId, cy, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, agentId, cy, NON_REV_IDS, RES_PREFIX]
+        [agentId, NON_REV_IDS, RES_PREFIX, KES_RATE, agentId, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Header commission + Footer consultant — most recent reservation snapshot

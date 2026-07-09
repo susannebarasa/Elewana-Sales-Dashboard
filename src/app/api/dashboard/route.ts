@@ -22,6 +22,15 @@ import { ROOM_REVENUE_SUM_SQL, EXTRAS_SUM_SQL, ROOM_REVENUE_CASE, EXCLUDED_FEE_C
 import { lookupAgentSegment, buildAgentFilterSql, MARKET_SEGMENT_VALUES } from '@/lib/agentSegments'
 import { getPortfolioBudget, getPropertyBudget, getAllBudgetProperties } from '@/lib/budget'
 import { runWithConcurrencyLimit } from '@/lib/concurrency'
+import {
+  dateInYearMonthRange,
+  dateInTwoYearMonthRange,
+  dateInYearThroughMonth,
+  dateInTwoYearsThroughMonth,
+  dateInFullYear,
+  caseInYearMonthRange,
+} from '@/lib/dateRange'
+import { parseDashboardView, queryIdsForView, type DashboardQueryId } from '@/lib/dashboardViews'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const n = (v: unknown, def = 0): number => {
@@ -99,12 +108,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const propertyParam = req.nextUrl.searchParams.get('property') ?? 'all'
     const property = propertyParam !== 'all' && VALID_PROPERTY_IDS.has(propertyParam) ? propertyParam : 'all'
 
-    const cacheKey = `${cy}|${period}|${channel}|${market}|${property}`
+    const view = parseDashboardView(req.nextUrl.searchParams.get('view'))
+    const needed = queryIdsForView(view)
+    const cacheKey = `${view}|${cy}|${period}|${channel}|${market}|${property}`
     const cached = dashboardCache.get(cacheKey)
     if (cached && Date.now() - cached.cachedAt < DASHBOARD_CACHE_TTL_MS) {
       return NextResponse.json({
         ...cached.data,
-        appliedFilters: { year: cy, period, monthRange: [monthLo, monthHi], channel, market, property },
+        appliedFilters: { year: cy, period, monthRange: [monthLo, monthHi], channel, market, property, view },
       })
     }
 
@@ -145,33 +156,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const EAR_IDS = Array.from(EAR_RESIDENT_RATE_TYPE_IDS)
     const KES_RATE = KES_USD_RATE // 129
 
-    // Run independent query groups in parallel, throttled to at most 12 concurrent DB round-trips
-    // (2026-07-15) — profiling showed that firing 50+ analytical queries at once causes severe
-    // DB-side contention (an isolated 1-3s query took 20-30s when 50+ siblings ran against the
-    // same RDS instance simultaneously), which raising the app's own connection pool size did NOT
-    // fix (confirmed empirically: connectionLimit 18 vs 70 showed near-identical slow-query
-    // durations) — the bottleneck is the database server's own concurrent-execution capacity, not
-    // how many connections the app is allowed to open. runWithConcurrencyLimit (src/lib/
-    // concurrency.ts) lets at most 12 of these run at once, letting the DB actually finish each
-    // group instead of thrashing across all of them at once. Market Segment Performance's 9
-    // queries (previously a separate, fully-sequential Promise.all AFTER this whole batch
-    // resolved — pure add-on latency) now run in their own concurrency-limited batch CONCURRENTLY
-    // with this one via the outer Promise.all below, not after it.
-    const [mainBatchResults, marketSegmentRawRows] = await Promise.all([
-      runWithConcurrencyLimit([
+    // View-scoped + concurrency-limited batch (2026-07-09 / 2026-07-15).
+    // Cold path (exec-summary) runs ~16 queries instead of ~67; throttle still caps at 12 in flight.
+    // View-scoped query execution (2026-07-09) — only run queries needed for `view`.
+    // Cold path (exec-summary default) drops from ~67 to ~16 round-trips.
+    const allQueries: Partial<Record<DashboardQueryId, () => Promise<unknown>>> = {
       // PD — monthly booking intake YTD (reservations only — no itinerary join needed)
-      () => query<{ m: number; mn: string; actual: number; ly_val: number }>(
+      pdRows: () => query<{ m: number; mn: string; actual: number; ly_val: number }>(
         `SELECT MONTH(r.date_created) AS m, LEFT(MONTHNAME(r.date_created),3) AS mn,
-          SUM(CASE WHEN YEAR(r.date_created)=? THEN IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0) ELSE 0 END)/1000 AS actual,
-          SUM(CASE WHEN YEAR(r.date_created)=? THEN IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0) ELSE 0 END)/1000 AS ly_val
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', cy, 1, cm)} THEN IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0) ELSE 0 END)/1000 AS actual,
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', ly, 1, cm)} THEN IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0) ELSE 0 END)/1000 AS ly_val
         FROM reservations r
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status IN ('20','30') AND YEAR(r.date_created) IN (?,?)
-          AND MONTH(r.date_created) <= ?
+        WHERE r.status IN ('20','30') AND (${dateInTwoYearsThroughMonth('r.date_created', cy, ly, cm)})
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
         GROUP BY MONTH(r.date_created), LEFT(MONTHNAME(r.date_created),3) ORDER BY m`,
-        [cy, KES_RATE, ly, KES_RATE, cy, ly, cm, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // PF — forward pipeline next 4 months.
@@ -179,7 +180,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // so each reservation's total_amount is counted exactly once and bucketed to its first
       // upcoming arrival month. Previously summed r.total_amount across all itinerary rows,
       // inflating by ~2–3x and incorrectly splitting multi-leg revenue across months.
-      () => query<{ mo: string; yr: number; mon: number; cf: number; pv: number; cf_val: number; pv_val: number }>(
+      pfRows: () => query<{ mo: string; yr: number; mon: number; cf: number; pv: number; cf_val: number; pv_val: number }>(
         `SELECT DATE_FORMAT(first_date_in,'%b %Y') AS mo, YEAR(first_date_in) AS yr, MONTH(first_date_in) AS mon,
           COUNT(CASE WHEN status='30' THEN 1 END)*100.0/GREATEST(COUNT(*),1) AS cf,
           COUNT(CASE WHEN status='20' THEN 1 END)*100.0/GREATEST(COUNT(*),1) AS pv,
@@ -207,7 +208,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // (everything blended) — now Room-Revenue-only, per hospitality convention. bkgs
       // (COUNT DISTINCT itinerary_id) is immune to the rate_components join fan-out, so it stays
       // in the same subquery as nights; only the revenue numerator needed its own subquery.
-      () => query<{ nm: string; property_id: string; bkgs: number; adr: number }>(
+      ocPropRows: () => query<{ nm: string; property_id: string; bkgs: number; adr: number }>(
         `SELECT nt.nm, nt.property AS property_id, nt.bkgs, ROUND(rev.room_rev/GREATEST(nt.nights,1)) AS adr
         FROM (
           SELECT i.property, COALESCE(p.name, i.property) AS nm,
@@ -246,20 +247,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // extras_ly) via a rate_components join — no nights aggregate in this query, so no
       // fan-out risk from the join. Day Use revenue (ACL/Kilindi) merged in from the separate
       // dayUseArrRows query below, in JS (same reasoning as AD.byProp).
-      () => query<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>(
+      arrRows: () => query<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>(
         `SELECT MONTH(i.date_in) AS m, LEFT(MONTHNAME(i.date_in),3) AS mn,
-          SUM(CASE WHEN YEAR(i.date_in)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS act,
-          SUM(CASE WHEN YEAR(i.date_in)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
-          SUM(CASE WHEN YEAR(i.date_in)=? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(i.date_in)=? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS act,
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', ly, 1, cm)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', ly, 1, cm)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) <= ?
+        WHERE r.status = '30' AND (${dateInTwoYearsThroughMonth('i.date_in', cy, ly, cm)})
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
         GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3) ORDER BY m`,
-        [cy, KES_RATE, ly, KES_RATE, cy, KES_RATE, ly, KES_RATE, cy, ly, cm, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, KES_RATE, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
@@ -268,17 +269,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX (2026-07-13, extras-table revenue): was Day Use only; broadened via
       // extrasTableRevenueCase, WHERE property restriction removed since the case expression
       // now decides inclusion per-row.
-      () => query<{ m: number; extras: number; extras_ly: number }>(
+      dayUseArrRows: () => query<{ m: number; extras: number; extras_ly: number }>(
         `SELECT MONTH(i.date_in) AS m,
-          SUM(CASE WHEN YEAR(i.date_in)=? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(i.date_in)=? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', ly, 1, cm)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
         FROM itineraries i
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) <= ?
+        WHERE r.status='30' AND (${dateInTwoYearsThroughMonth('i.date_in', cy, ly, cm)})
         GROUP BY MONTH(i.date_in)`,
-        [cy, KES_RATE, ly, KES_RATE, cy, ly, cm]
+        [KES_RATE, KES_RATE]
       ),
 
       // AD.yearly — top 12 trade partners this year.
@@ -300,7 +301,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // approved hospitality-convention decision applied to every other ADR figure. Nights (nt)
       // split into their own sub-subquery in both `lg` and `res` so joining rate_components for
       // the revenue numerator doesn't multiply nights by component count per itinerary.
-      () => query<{ ag_id: string; nm: string; rv_raw: number; extras_raw: number; nt: number; adr: number; r_adr: number; agent_physical_country: string | null; agent_postal_country: string | null }>(
+      agRows: () => query<{ ag_id: string; nm: string; rv_raw: number; extras_raw: number; nt: number; adr: number; r_adr: number; agent_physical_country: string | null; agent_postal_country: string | null }>(
         `SELECT a.agent_id AS ag_id, a.agent_name AS nm, rv.rv_raw, rv.extras_raw, lg.nt, lg.adr, res.r_adr,
           a.agent_physical_country, a.agent_postal_country
         FROM (
@@ -311,7 +312,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN itineraries i ON r.reservation_number = i.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+          WHERE r.status = '30' AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
             AND r.agent_id NOT IN (?)
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?${AND_P}
@@ -322,7 +323,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           FROM (
             SELECT r.agent_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt
             FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-            WHERE r.status IN ('20','30') AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND r.rate_type NOT IN (?)
               AND r.reservation_number NOT LIKE ?${AND_P}
@@ -333,7 +334,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
             JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
             LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-            WHERE r.status IN ('20','30') AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND r.rate_type NOT IN (?)
               AND r.reservation_number NOT LIKE ?${AND_P}
@@ -345,7 +346,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           FROM (
             SELECT r.agent_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt
             FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-            WHERE r.status IN ('20','30') AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND r.rate_type IN (?)
               AND r.reservation_number NOT LIKE ?${AND_P}
@@ -356,7 +357,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
             JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
             LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-            WHERE r.status IN ('20','30') AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND r.rate_type IN (?)
               AND r.reservation_number NOT LIKE ?${AND_P}
@@ -367,12 +368,29 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_A}
         ORDER BY rv_raw DESC LIMIT 12`,
-        [KES_RATE, KES_RATE, cy, monthLo, monthHi, EX_AGENT_IDS, NON_REV_IDS, RES_PREFIX,
-         cy, monthLo, monthHi, EX_AGENT_IDS, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, cy, monthLo, monthHi, EX_AGENT_IDS, NON_REV_IDS, RES_PREFIX,
-         cy, monthLo, monthHi, EX_AGENT_IDS, EAR_IDS, RES_PREFIX,
-         KES_RATE, cy, monthLo, monthHi, EX_AGENT_IDS, EAR_IDS, RES_PREFIX,
-         EX_AGENT_NAMES, AGENT_NAME_LIKE]
+        [
+          KES_RATE,
+          KES_RATE,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_IDS,
+          EAR_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EAR_IDS,
+          RES_PREFIX,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE
+        ]
       ),
 
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
@@ -381,7 +399,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX (2026-07-13, Channel/Market Segment filtering): added the agents join (previously
       // absent) solely so AND_A can reach a.agent_name — does not change which agent_ids were
       // already being excluded here (r.agent_id NOT IN (?) is unchanged).
-      () => query<{ agent_id: string; extras: number }>(
+      dayUseAgentRows: () => query<{ agent_id: string; extras: number }>(
         `SELECT r.agent_id,
           SUM(CASE WHEN ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END) AS extras
         FROM itineraries i
@@ -389,10 +407,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         JOIN agents a ON r.agent_id = a.agent_id
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND r.agent_id IS NOT NULL AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+        WHERE r.status='30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
           AND r.agent_id NOT IN (?)${AND_A}${AND_P}
         GROUP BY r.agent_id`,
-        [KES_RATE, cy, monthLo, monthHi, EX_AGENT_IDS]
+        [KES_RATE, EX_AGENT_IDS]
       ),
 
       // AD.yearly LY comparison — feeds the Top Trade Partners table's YoY chip only (rv vs
@@ -404,21 +422,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX (2026-07-09, Tier 3): rv_raw was r.total_amount (everything blended) — now
       // Room-Revenue-only via rate_components, matching the current-year side so the YoY chip
       // stays apples-to-apples.
-      () => query<{ nm: string; rv_raw: number }>(
+      agLyRows: () => query<{ nm: string; rv_raw: number }>(
         `SELECT a.agent_name AS nm, ${ROOM_REVENUE_SUM_SQL} AS rv_raw
         FROM reservations r
         JOIN agents a ON r.agent_id=a.agent_id
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+        WHERE r.status = '30' AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)}
           AND a.agent_id NOT IN (?)
           AND a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
         GROUP BY a.agent_id, a.agent_name`,
-        [KES_RATE, ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // AD.byProp — revenue by property for agent bookings.
@@ -432,12 +450,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // i.property, which is exactly what the per-property classification needs. Day Use revenue
       // (ACL/Kilindi) is NOT in this result — it has no rate_components (confirmed live, $0) —
       // it's merged in from the separate dayUsePropRows query below, in JS.
-      () => query<{ pr: string; property_id: string; rv: number; ly_val: number; extras: number; extras_ly: number }>(
+      agPropRows: () => query<{ pr: string; property_id: string; rv: number; ly_val: number; extras: number; extras_ly: number }>(
         `SELECT COALESCE(p.name, i.property) AS pr, i.property AS property_id,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS rv,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS rv,
+          SUM(CASE WHEN ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
+          SUM(CASE WHEN ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
@@ -450,9 +468,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
         GROUP BY i.property, COALESCE(p.name, i.property) ORDER BY rv DESC LIMIT 16`,
-        [cy, monthLo, monthHi, KES_RATE, ly, monthLo, monthHi, KES_RATE,
-         cy, monthLo, monthHi, KES_RATE, ly, monthLo, monthHi, KES_RATE,
-         EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [
+          KES_RATE,
+          KES_RATE,
+          KES_RATE,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX
+        ]
       ),
 
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
@@ -465,10 +491,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // a.agent_name) plus r.agent_id IS NOT NULL, which — as a direct side effect — also fixes
       // that pre-existing scope mismatch. Flagging explicitly since it changes AD.byProp's Day
       // Use figures slightly (previously-included non-agent Day Use money is now excluded).
-      () => query<{ property_id: string; extras: number; extras_ly: number }>(
+      dayUsePropRows: () => query<{ property_id: string; extras: number; extras_ly: number }>(
         `SELECT i.property AS property_id,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
         FROM itineraries i
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
@@ -476,7 +502,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status='30' AND r.agent_id IS NOT NULL${AND_A}${AND_P}
         GROUP BY i.property`,
-        [cy, monthLo, monthHi, KES_RATE, ly, monthLo, monthHi, KES_RATE]
+        [KES_RATE, KES_RATE]
       ),
 
       // AD.byMonth — agent revenue by month.
@@ -486,27 +512,36 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // blended) — now a rate_components-based Room/Extras split (new extras/extras_ly), no
       // nights aggregate in this query so no fan-out risk from the added join. Day Use merged in
       // from a separate by-month query below, in JS.
-      () => query<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>(
+      agMonthRows: () => query<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>(
         `SELECT MONTH(r.date_created) AS m, LEFT(MONTHNAME(r.date_created),3) AS mn,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS act,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', cy, 1, cm)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS act,
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', ly, 1, cm)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val,
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', cy, 1, cm)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', ly, 1, cm)} AND NOT ${ROOM_REVENUE_CASE} AND NOT ${EXCLUDED_FEE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS extras_ly
         FROM reservations r
         JOIN agents a ON r.agent_id = a.agent_id
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status = '30' AND r.agent_id IS NOT NULL
-          AND YEAR(r.date_created) IN (?,?) AND MONTH(r.date_created) <= ?
+          AND (${dateInTwoYearsThroughMonth('r.date_created', cy, ly, cm)})
           AND r.agent_id NOT IN (?)
           AND a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
         GROUP BY MONTH(r.date_created), LEFT(MONTHNAME(r.date_created),3) ORDER BY m`,
-        [cy, KES_RATE, ly, KES_RATE, cy, KES_RATE, ly, KES_RATE,
-         cy, ly, cm, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [
+          KES_RATE,
+          KES_RATE,
+          KES_RATE,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX
+        ]
       ),
 
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
@@ -514,32 +549,32 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX (2026-07-13, extras-table revenue): broadened beyond Day Use.
       // FIX (2026-07-13, Channel/Market Segment filtering): added the agents join (previously
       // absent) solely so AND_A can reach a.agent_name — agent_id scoping was already correct.
-      () => query<{ m: number; extras: number; extras_ly: number }>(
+      dayUseAgentMonthRows: () => query<{ m: number; extras: number; extras_ly: number }>(
         `SELECT MONTH(r.date_created) AS m,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
-          SUM(CASE WHEN YEAR(r.date_created)=? AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', cy, 1, cm)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras,
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', ly, 1, cm)} AND ${extrasTableRevenueCase('i', 'e')} THEN (CASE WHEN dt.currency='KES' THEN e.amount/? ELSE e.amount END) ELSE 0 END)/1000 AS extras_ly
         FROM itineraries i
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND r.agent_id IS NOT NULL AND YEAR(r.date_created) IN (?,?) AND MONTH(r.date_created) <= ?
+        WHERE r.status='30' AND r.agent_id IS NOT NULL AND (${dateInTwoYearsThroughMonth('r.date_created', cy, ly, cm)})
           AND r.agent_id NOT IN (?)${AND_A}${AND_P}
         GROUP BY MONTH(r.date_created)`,
-        [cy, KES_RATE, ly, KES_RATE, cy, ly, cm, EX_AGENT_IDS]
+        [KES_RATE, KES_RATE, EX_AGENT_IDS]
       ),
 
       // AD.occByMonth — room nights by month. DATEDIFF per leg is the legitimate exception.
-      () => query<{ m: number; mn: string; act: number; ly_val: number }>(
+      occMonthRows: () => query<{ m: number; mn: string; act: number; ly_val: number }>(
         `SELECT MONTH(i.date_in) AS m, LEFT(MONTHNAME(i.date_in),3) AS mn,
-          SUM(CASE WHEN YEAR(i.date_in)=? THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS act,
-          SUM(CASE WHEN YEAR(i.date_in)=? THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS ly_val
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS act,
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', ly, 1, cm)} THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS ly_val
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status IN ('20','30') AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) <= ?
+        WHERE r.status IN ('20','30') AND (${dateInTwoYearsThroughMonth('i.date_in', cy, ly, cm)})
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
         GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3) ORDER BY m`,
-        [cy, ly, cy, ly, cm, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // AD.adr — average daily rate by month, resident vs non-resident.
@@ -550,16 +585,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // and revenue (rev) split into separate GROUP-BY-month subqueries joined on month, so
       // joining rate_components for the revenue numerator doesn't multiply nights by component
       // count per itinerary.
-      () => query<{ m: number; mn: string; nr: number; res: number }>(
+      adrRows: () => query<{ m: number; mn: string; nr: number; res: number }>(
         `SELECT nt.m, nt.mn,
           ROUND(rev.nr_rev/GREATEST(nt.nr_nights,1)) AS nr,
           ROUND(rev.res_rev/GREATEST(nt.res_nights,1)) AS res
         FROM (
           SELECT MONTH(i.date_in) AS m, LEFT(MONTHNAME(i.date_in),3) AS mn,
-            SUM(CASE WHEN YEAR(i.date_in)=? AND r.rate_type NOT IN (?) THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nr_nights,
-            SUM(CASE WHEN YEAR(i.date_in)=? AND r.rate_type IN (?) THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS res_nights
+            SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} AND r.rate_type NOT IN (?) THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nr_nights,
+            SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} AND r.rate_type IN (?) THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS res_nights
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) <= ?
+          WHERE r.status = '30' AND ${dateInYearThroughMonth('i.date_in', cy, cm)}
             AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
@@ -567,38 +602,48 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         ) nt
         JOIN (
           SELECT MONTH(i.date_in) AS m,
-            SUM(CASE WHEN YEAR(i.date_in)=? AND r.rate_type NOT IN (?) AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS nr_rev,
-            SUM(CASE WHEN YEAR(i.date_in)=? AND r.rate_type IN (?) AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS res_rev
+            SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} AND r.rate_type NOT IN (?) AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS nr_rev,
+            SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, cm)} AND r.rate_type IN (?) AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS res_rev
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) <= ?
+          WHERE r.status = '30' AND ${dateInYearThroughMonth('i.date_in', cy, cm)}
             AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
           GROUP BY MONTH(i.date_in)
         ) rev ON nt.m = rev.m
         ORDER BY nt.m`,
-        [cy, EAR_IDS, cy, EAR_IDS, cy, cm, NON_REV_IDS, RES_PREFIX,
-         cy, EAR_IDS, KES_RATE, cy, EAR_IDS, KES_RATE, cy, cm, NON_REV_IDS, RES_PREFIX]
+        [
+          EAR_IDS,
+          EAR_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EAR_IDS,
+          KES_RATE,
+          EAR_IDS,
+          KES_RATE,
+          NON_REV_IDS,
+          RES_PREFIX
+        ]
       ),
 
       // AD.ch — channel breakdown. Reservations only — no itinerary join, no dedup needed.
-      () => query<{ ch: string; cnt: number }>(
+      chRows: () => query<{ ch: string; cnt: number }>(
         `SELECT IFNULL(rate_type,'Unallocated') AS ch, COUNT(*) AS cnt
-        FROM reservations WHERE status IN ('20','30') AND YEAR(date_created)=? AND MONTH(date_created) BETWEEN ? AND ?
+        FROM reservations WHERE status IN ('20','30') AND ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)}
           AND rate_type NOT IN (?)
           AND reservation_number NOT LIKE ?
           AND total_amount > 0
         GROUP BY rate_type ORDER BY cnt DESC LIMIT 5`,
-        [cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // PLF — forward pipeline funnel.
       // FIX: DISTINCT subquery collapses each reservation to one row before summing total_amount.
       // COUNT(*) replaces COUNT(DISTINCT ...) since the subquery already deduplicates.
       // Previously summed r.total_amount across all itinerary rows (2.92x inflation on total_val).
-      () => queryOne<{
+      plfRow: () => queryOne<{
         total_ct: number; total_val: number
         cf_ct: number; cf_val: number
         pv_ct: number; pv_val: number
@@ -628,7 +673,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX: reads r.total_amount from reservations directly (one row per reservation),
       // using IN (SELECT DISTINCT ...) for date filtering instead of a JOIN that fans out rows.
       // Previously: 2.23x inflation on ytd_val ($251M → $112M correct).
-      () => queryOne<{ ytd_ct: number; ytd_val: number }>(
+      ytdRow: () => queryOne<{ ytd_ct: number; ytd_val: number }>(
         `SELECT COUNT(*) AS ytd_ct, SUM(IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0)) AS ytd_val
         FROM reservations r
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
@@ -636,13 +681,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND r.reservation_number NOT LIKE ?
           AND r.reservation_number IN (
             SELECT DISTINCT reservation_number FROM itineraries
-            WHERE date_in < CURDATE() AND YEAR(date_in)=?
+            WHERE date_in < CURDATE() AND ${dateInFullYear('date_in', cy)}
           )`,
-        [KES_RATE, NON_REV_IDS, RES_PREFIX, cy]
+        [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // PLT — next 6 arrivals. Per-leg display table — i.total_gross_amount per leg is intentional.
-      () => query<{ ag: string; agent_id: string; pr: string; property_id: string; ci: Date; nt: number; vl: number; st: string }>(
+      pltRows: () => query<{ ag: string; agent_id: string; pr: string; property_id: string; ci: Date; nt: number; vl: number; st: string }>(
         `SELECT a.agent_name AS ag, a.agent_id AS agent_id, COALESCE(p.name, i.property) AS pr, i.property AS property_id,
           i.date_in AS ci, DATEDIFF(i.date_out, i.date_in) AS nt,
           CASE WHEN dt.currency='KES' THEN IFNULL(i.total_gross_amount, r.total_amount)/? ELSE IFNULL(i.total_gross_amount, r.total_amount) END AS vl,
@@ -681,7 +726,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // So counts (bk/cv, reservations-only, unchanged) and revenue (rv/extras,
       // rate_components-based, new) are now separate subqueries LEFT JOIN'd on consultant code —
       // same split-then-join pattern used throughout Tier 1-3.
-      () => query<{ code: string; display_name: string | null; bk: number; rv: number; extras: number; cv: number }>(
+      cdRows: () => query<{ code: string; display_name: string | null; bk: number; rv: number; extras: number; cv: number }>(
         `SELECT counts.code, counts.display_name, counts.bk, counts.cv,
           rev.rv/1000 AS rv, rev.extras/1000 AS extras
         FROM (
@@ -692,12 +737,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             COUNT(CASE WHEN r.total_amount > 0 THEN 1 END) AS bk,
             COUNT(CASE WHEN r.total_amount > 0 THEN 1 END)*100.0/(
               SELECT COUNT(*) FROM reservations
-              WHERE status IN ('20','30') AND YEAR(date_created)=? AND MONTH(date_created) BETWEEN ? AND ?
+              WHERE status IN ('20','30') AND ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)}
                 AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0
             ) AS cv
           FROM reservations r
           WHERE r.status IN ('20','30') AND r.consultant IS NOT NULL AND r.consultant!=''
-            AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
+            AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)} AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
           GROUP BY r.consultant
           ORDER BY bk DESC LIMIT 10
         ) counts
@@ -708,18 +753,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE r.status='30' AND r.consultant IS NOT NULL AND r.consultant!=''
-            AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
             AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
           GROUP BY r.consultant
         ) rev ON counts.code = rev.code
         ORDER BY counts.bk DESC`,
-        [cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,
-         cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX, NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI: confirmed forward bookings. COUNT(DISTINCT) handles fan-out — no dedup needed.
-      () => queryOne<{ confirmed_bkgs: number }>(
+      kpiConfirmed: () => queryOne<{ confirmed_bkgs: number }>(
         `SELECT COUNT(DISTINCT r.reservation_number) AS confirmed_bkgs
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         WHERE r.status='30' AND i.date_in > CURDATE()
@@ -757,13 +800,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // bookings already get real DATEDIFF-based nights from the `nights` subquery above.
       // WHERE's day-use property restriction moved into each aggregate's own CASE so the LEFT
       // JOIN can reach every reservation, not just Day Use legs.
-      () => queryOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>(
+      kpiRevNights: () => queryOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>(
         `SELECT nights.total_nights, rev.rev_raw, rev.extras_raw, dayuse.extras_table_revenue, dayuse.day_use_nights,
           ROUND(rev.rev_raw/GREATEST(nights.total_nights,1)) AS adr
         FROM (
           SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) nights
@@ -772,7 +815,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) rev
@@ -783,11 +826,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.status='30' AND YEAR(i2.date_in)=? AND MONTH(i2.date_in) BETWEEN ? AND ? AND i2.date_in <= CURDATE()
+          WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', cy, monthLo, monthHi)} AND i2.date_in <= CURDATE()
         ) dayuse`,
-        [cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, cy, monthLo, monthHi]
+        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
       ),
 
       // KPI: total revenue, full-year basis — dedicated denominator for Trade Partners'
@@ -799,15 +840,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // (kpiAgentRev's `rev`), deferred from Tier 1 specifically to keep this ratio's numerator
       // and denominator on the same basis at all times. No nights aggregate in this query, so no
       // fan-out risk from the rate_components join.
-      () => queryOne<{ rev_raw: number }>(
+      kpiTotalRevFullYear: () => queryOne<{ rev_raw: number }>(
         `SELECT ${ROOM_REVENUE_SUM_SQL} AS rev_raw
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out > i.date_in
+        WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?`,
-        [KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI: actual Room Revenue for "Pace vs Budget" — MTD (the real current calendar month
@@ -820,17 +861,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // now," not a re-sliceable historical view. Budget itself only covers 2026 (see
       // src/lib/budget.ts) — for any other selected year this comparison is still computed but
       // will show $0 budget, since there is no other year's file.
-      () => queryOne<{ mtd_rev: number; ytd_rev: number }>(
+      kpiBudgetActual: () => queryOne<{ mtd_rev: number; ytd_rev: number }>(
         `SELECT
-            SUM(CASE WHEN MONTH(i.date_in) = ? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS mtd_rev,
-            SUM(CASE WHEN MONTH(i.date_in) BETWEEN 1 AND ? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS ytd_rev
+            SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, realCurrentMonth, realCurrentMonth)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS mtd_rev,
+            SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 1, realCurrentMonth)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS ytd_rev
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND YEAR(i.date_in) = ? AND i.date_out > i.date_in
+        WHERE r.status = '30' AND ${dateInFullYear('i.date_in', cy)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?`,
-        [realCurrentMonth, KES_RATE, realCurrentMonth, KES_RATE, cy, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Property-level Budget variance table (2026-07-13) — ADDITIVE, does not touch any
@@ -838,12 +879,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // (hardcoded, not the selected year/period filters — same reasoning as kpiBudgetActual
       // above: a Budget comparison is inherently tied to the year the budget file covers, not
       // whatever year/period the dashboard happens to be showing).
-      () => query<{ property_id: string; rev: number }>(
+      budgetActualByPropRows: () => query<{ property_id: string; rev: number }>(
         `SELECT i.property AS property_id, ${ROOM_REVENUE_SUM_SQL} AS rev
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND YEAR(i.date_in) = 2026 AND i.date_out > i.date_in
+        WHERE r.status = '30' AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
         GROUP BY i.property`,
@@ -857,26 +898,26 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // in a prior year for a future-year stay, understating count. Itinerary join added
       // solely to reach i.date_in — COUNT(DISTINCT r.agent_id) is unaffected by the resulting
       // per-leg fan-out, so no additional dedup is needed for this specific aggregate.
-      () => queryOne<{ active_agents: number }>(
+      kpiAgents: () => queryOne<{ active_agents: number }>(
         `SELECT COUNT(DISTINCT r.agent_id) AS active_agents
         FROM reservations r
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
-        WHERE r.status IN ('20','30') AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+        WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}
           AND r.agent_id NOT IN (?)
           AND a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
           AND r.total_amount > 0`,
-        [cy, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI: pipeline value.
       // FIX: reads r.total_amount from reservations directly (one row per reservation),
       // using IN (SELECT DISTINCT ...) for date filtering. Previously 2.51x inflation
       // ($20.3M → $8.1M correct). pipeline_opps count was already correct.
-      () => queryOne<{ pipeline_raw: number; pipeline_opps: number }>(
+      kpiPipeline: () => queryOne<{ pipeline_raw: number; pipeline_opps: number }>(
         `SELECT SUM(IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0)) AS pipeline_raw,
           COUNT(CASE WHEN r.total_amount > 0 THEN 1 END) AS pipeline_opps
         FROM reservations r
@@ -892,14 +933,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // KPI: avg lead time. Note: biased toward multi-leg reservations (each leg contributes
       // one data point to the AVG with a different date_in). Logged as a separate lower-priority
       // item — not fixed here, as it requires a MIN(date_in) dedup that changes the query shape.
-      () => queryOne<{ avg_lead: number }>(
+      kpiLead: () => queryOne<{ avg_lead: number }>(
         `SELECT ROUND(AVG(DATEDIFF(i.date_in, r.date_created))) AS avg_lead
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         WHERE r.status IN ('20','30') AND r.date_created IS NOT NULL
-          AND i.date_in > r.date_created AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+          AND i.date_in > r.date_created AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?`,
-        [cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI: agent revenue + avg stay.
@@ -947,7 +988,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX (2026-07-13, extras-table revenue): day_use_extras renamed extras_table_revenue and
       // broadened via extrasTableRevenueCase (Day Use, any category + confirmed-clean categories
       // everywhere else). WHERE's day-use property restriction moved into the SUM's own CASE.
-      () => queryOne<{ arev_raw: number; extras_raw: number; extras_table_revenue: number; port_adr: number; avg_stay: number }>(
+      kpiAgentRev: () => queryOne<{ arev_raw: number; extras_raw: number; extras_table_revenue: number; port_adr: number; avg_stay: number }>(
         `SELECT rev.arev_raw, rev.extras_raw, dayuse.extras_table_revenue, lg.port_adr, lg.avg_stay
         FROM (
           SELECT ${ROOM_REVENUE_SUM_SQL} AS arev_raw, ${EXTRAS_SUM_SQL} AS extras_raw
@@ -956,7 +997,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN agents a ON r.agent_id = a.agent_id
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}
             AND r.agent_id NOT IN (?)
             AND a.agent_name NOT IN (?)
             AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -970,7 +1011,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN agents a2 ON r2.agent_id = a2.agent_id
           JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.status='30' AND r2.agent_id IS NOT NULL AND YEAR(i2.date_in)=? AND MONTH(i2.date_in) BETWEEN ? AND ?
+          WHERE r2.status='30' AND r2.agent_id IS NOT NULL AND ${dateInYearMonthRange('i2.date_in', cy, monthLo, monthHi)}
             AND r2.agent_id NOT IN (?)
             AND a2.agent_name NOT IN (?)
             AND (LOWER(a2.agent_name) NOT LIKE ? OR a2.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_A2}${AND_P2}
@@ -983,7 +1024,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
               COUNT(DISTINCT r.reservation_number) AS res_ct
             FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
             JOIN agents a ON r.agent_id = a.agent_id
-            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND a.agent_name NOT IN (?)
               AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -996,7 +1037,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             JOIN agents a ON r.agent_id = a.agent_id
             JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
             LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND a.agent_name NOT IN (?)
               AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -1004,47 +1045,67 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
               AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
           ) roomrev
         ) lg`,
-        [KES_RATE, KES_RATE, cy, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, cy, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE,
-         cy, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, cy, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [
+          KES_RATE,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX
+        ]
       ),
 
       // KPI: consultants. Reservations only — no dedup needed.
-      () => queryOne<{ n_consult: number; total_bkgs: number }>(
+      kpiConsult: () => queryOne<{ n_consult: number; total_bkgs: number }>(
         `SELECT COUNT(DISTINCT consultant) AS n_consult, COUNT(*) AS total_bkgs
         FROM reservations
         WHERE status IN ('20','30') AND consultant IS NOT NULL AND consultant!=''
-          AND YEAR(date_created)=? AND MONTH(date_created) BETWEEN ? AND ? AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0`,
-        [cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+          AND ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0`,
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI: LY bookings for pace index. COUNT(DISTINCT) handles fan-out — no dedup needed.
-      () => queryOne<{ cnt: number }>(
+      kpiLyBkgs: () => queryOne<{ cnt: number }>(
         `SELECT COUNT(DISTINCT r.reservation_number) AS cnt
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
-        WHERE r.status IN ('20','30') AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+        WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)}
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
           AND r.total_amount > 0`,
-        [ly, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI LY: active trade partners, same-period prior year — real YoY basis for
       // KP_BASE.agents.active. Identical shape to the kpiAgents query above, cy -> ly.
-      () => queryOne<{ active_agents: number }>(
+      kpiAgentsLy: () => queryOne<{ active_agents: number }>(
         `SELECT COUNT(DISTINCT r.agent_id) AS active_agents
         FROM reservations r
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
-        WHERE r.status IN ('20','30') AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+        WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)}
           AND r.agent_id NOT IN (?)
           AND a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
           AND r.total_amount > 0`,
-        [ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI LY: agent revenue + portfolio ADR + avg stay, same-period prior year — real
@@ -1054,7 +1115,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX (2026-07-13, extras-table revenue): day_use_extras renamed extras_table_revenue and
       // broadened via extrasTableRevenueCase (Day Use, any category + confirmed-clean categories
       // everywhere else). WHERE's day-use property restriction moved into the SUM's own CASE.
-      () => queryOne<{ arev_raw: number; extras_raw: number; extras_table_revenue: number; port_adr: number; avg_stay: number }>(
+      kpiAgentRevLy: () => queryOne<{ arev_raw: number; extras_raw: number; extras_table_revenue: number; port_adr: number; avg_stay: number }>(
         `SELECT rev.arev_raw, rev.extras_raw, dayuse.extras_table_revenue, lg.port_adr, lg.avg_stay
         FROM (
           SELECT ${ROOM_REVENUE_SUM_SQL} AS arev_raw, ${EXTRAS_SUM_SQL} AS extras_raw
@@ -1063,7 +1124,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN agents a ON r.agent_id = a.agent_id
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+          WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)}
             AND r.agent_id NOT IN (?)
             AND a.agent_name NOT IN (?)
             AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -1077,7 +1138,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN agents a2 ON r2.agent_id = a2.agent_id
           JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.status='30' AND r2.agent_id IS NOT NULL AND YEAR(i2.date_in)=? AND MONTH(i2.date_in) BETWEEN ? AND ?
+          WHERE r2.status='30' AND r2.agent_id IS NOT NULL AND ${dateInYearMonthRange('i2.date_in', ly, monthLo, monthHi)}
             AND r2.agent_id NOT IN (?)
             AND a2.agent_name NOT IN (?)
             AND (LOWER(a2.agent_name) NOT LIKE ? OR a2.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_A2}${AND_P2}
@@ -1090,7 +1151,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
               COUNT(DISTINCT r.reservation_number) AS res_ct
             FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
             JOIN agents a ON r.agent_id = a.agent_id
-            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND a.agent_name NOT IN (?)
               AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -1103,7 +1164,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             JOIN agents a ON r.agent_id = a.agent_id
             JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
             LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+            WHERE r.status = '30' AND r.agent_id IS NOT NULL AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)}
               AND r.agent_id NOT IN (?)
               AND a.agent_name NOT IN (?)
               AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -1111,10 +1172,30 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
               AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
           ) roomrev
         ) lg`,
-        [KES_RATE, KES_RATE, ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE,
-         ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [
+          KES_RATE,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE,
+          NON_REV_IDS,
+          RES_PREFIX
+        ]
       ),
 
       // KPI LY: revenue + nights + adr, same-period prior year — real YoY basis for
@@ -1126,13 +1207,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // as kpiRevNights above, cy -> ly.
       // FIX (2026-07-13, Day Use nights gap): same day_use_nights addition as kpiRevNights above.
       // FIX (2026-07-13, extras-table revenue): same broadening as kpiRevNights above.
-      () => queryOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>(
+      kpiRevNightsLy: () => queryOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>(
         `SELECT nights.total_nights, rev.rev_raw, rev.extras_raw, dayuse.extras_table_revenue, dayuse.day_use_nights,
           ROUND(rev.rev_raw/GREATEST(nights.total_nights,1)) AS adr
         FROM (
           SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) nights
@@ -1141,7 +1222,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
         ) rev
@@ -1152,33 +1233,31 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.status='30' AND YEAR(i2.date_in)=? AND MONTH(i2.date_in) BETWEEN ? AND ? AND i2.date_in <= CURDATE()
+          WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', ly, monthLo, monthHi)} AND i2.date_in <= CURDATE()
         ) dayuse`,
-        [ly, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, KES_RATE, ly, monthLo, monthHi, NON_REV_IDS, RES_PREFIX,
-         KES_RATE, ly, monthLo, monthHi]
+        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
       ),
 
       // KPI LY: avg lead time, same-period prior year — real YoY basis for pace.lead.
       // Identical shape to the kpiLead query above, cy -> ly.
-      () => queryOne<{ avg_lead: number }>(
+      kpiLeadLy: () => queryOne<{ avg_lead: number }>(
         `SELECT ROUND(AVG(DATEDIFF(i.date_in, r.date_created))) AS avg_lead
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         WHERE r.status IN ('20','30') AND r.date_created IS NOT NULL
-          AND i.date_in > r.date_created AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+          AND i.date_in > r.date_created AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)}
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?`,
-        [ly, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI LY: consultants, same-period prior year — real YoY basis for consult.n/bkgs
       // (and the derived consult.avg). Identical shape to the kpiConsult query above, cy -> ly.
-      () => queryOne<{ n_consult: number; total_bkgs: number }>(
+      kpiConsultLy: () => queryOne<{ n_consult: number; total_bkgs: number }>(
         `SELECT COUNT(DISTINCT consultant) AS n_consult, COUNT(*) AS total_bkgs
         FROM reservations
         WHERE status IN ('20','30') AND consultant IS NOT NULL AND consultant!=''
-          AND YEAR(date_created)=? AND MONTH(date_created) BETWEEN ? AND ? AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0`,
-        [ly, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+          AND ${dateInYearMonthRange('date_created', ly, monthLo, monthHi)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0`,
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // CD LY — consultant revenue prior year, same period, keyed by consultant name.
@@ -1189,16 +1268,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // FIX (2026-07-09, Tier 3): rv was r.total_amount (everything blended) — now
       // Room-Revenue-only via rate_components, matching cdRows' current-year side so the YoY
       // chip stays apples-to-apples. No counts sharing this query, so no split needed.
-      () => query<{ nm: string; rv: number }>(
+      cdLyRows: () => query<{ nm: string; rv: number }>(
         `SELECT r.consultant AS nm, ${ROOM_REVENUE_SUM_SQL}/1000 AS rv
         FROM reservations r
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status = '30' AND r.consultant IS NOT NULL AND r.consultant!=''
-          AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ? AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
+          AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)} AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
         GROUP BY r.consultant`,
-        [KES_RATE, ly, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI STLY: confirmed bookings, BOUNDED window, dedicated to the Confirmed Bookings
@@ -1211,7 +1290,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // 4,451 — a -68% "delta" that was a measurement artifact, not a real signal).
       // Fix: both windows below are the SAME fixed 1-year span, just shifted — current
       // is [today, +1yr), STLY is [-1yr, today) — so they're symmetric and comparable.
-      () => queryOne<{ confirmed_bkgs: number }>(
+      kpiConfirmedBounded: () => queryOne<{ confirmed_bkgs: number }>(
         `SELECT COUNT(DISTINCT r.reservation_number) AS confirmed_bkgs
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         WHERE r.status='30' AND i.date_in > CURDATE() AND i.date_in <= DATE_ADD(CURDATE(), INTERVAL 1 YEAR)
@@ -1223,7 +1302,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       // KPI STLY: confirmed bookings, same bounded 1-year window shifted back exactly a
       // year — [-1yr, today) — the STLY counterpart to kpiConfirmedBounded above.
-      () => queryOne<{ confirmed_bkgs: number }>(
+      kpiConfirmedStly: () => queryOne<{ confirmed_bkgs: number }>(
         `SELECT COUNT(DISTINCT r.reservation_number) AS confirmed_bkgs
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         WHERE r.status='30' AND i.date_in > DATE_SUB(CURDATE(), INTERVAL 1 YEAR) AND i.date_in <= CURDATE()
@@ -1236,7 +1315,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // KPI STLY: pipeline value + opps, same-time-last-year basis. Identical shape to
       // the kpiPipeline query above, CURDATE() -> DATE_SUB(CURDATE(), INTERVAL 1 YEAR) —
       // same STLY reasoning as kpiConfirmedStly above.
-      () => queryOne<{ pipeline_raw: number; pipeline_opps: number }>(
+      kpiPipelineStly: () => queryOne<{ pipeline_raw: number; pipeline_opps: number }>(
         `SELECT SUM(IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0)) AS pipeline_raw,
           COUNT(CASE WHEN r.total_amount > 0 THEN 1 END) AS pipeline_opps
         FROM reservations r
@@ -1256,28 +1335,28 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // a standard YoY comparison. Flagging: date_created was chosen (booking-intake
       // basis, matching kpiConsult/CD/PD) since a cancelled reservation has no meaningful
       // "stay" to anchor on via i.date_in — correct me if a different date field was intended.
-      () => queryOne<{ cancelled_ct: number; total_ct: number }>(
+      kpiCancel: () => queryOne<{ cancelled_ct: number; total_ct: number }>(
         `SELECT
           COUNT(CASE WHEN status='90' THEN 1 END) AS cancelled_ct,
           COUNT(CASE WHEN status IN ('20','30','90') THEN 1 END) AS total_ct
         FROM reservations
-        WHERE YEAR(date_created)=? AND MONTH(date_created) BETWEEN ? AND ?
+        WHERE ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)}
           AND rate_type NOT IN (?)
           AND reservation_number NOT LIKE ?`,
-        [cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI LY: cancellation rate, same-period prior year — real YoY basis for
       // occ.cancel. Identical shape to kpiCancel above, cy -> ly.
-      () => queryOne<{ cancelled_ct: number; total_ct: number }>(
+      kpiCancelLy: () => queryOne<{ cancelled_ct: number; total_ct: number }>(
         `SELECT
           COUNT(CASE WHEN status='90' THEN 1 END) AS cancelled_ct,
           COUNT(CASE WHEN status IN ('20','30','90') THEN 1 END) AS total_ct
         FROM reservations
-        WHERE YEAR(date_created)=? AND MONTH(date_created) BETWEEN ? AND ?
+        WHERE ${dateInYearMonthRange('date_created', ly, monthLo, monthHi)}
           AND rate_type NOT IN (?)
           AND reservation_number NOT LIKE ?`,
-        [ly, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // Forecast Room Nights, Piece 1+2 (2026-07-14): Confirmed (status='30') + Provisional
@@ -1288,7 +1367,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // (day_use_nights) counted separately and added to confirmed_nights_raw in JS, same
       // pattern as kpiRevNights above — Day Use legs carry 0 nights under DATEDIFF. Provisional
       // is deliberately NOT Day-Use-adjusted (see JS assembly below for why).
-      () => query<{ yr: number; mo: number; confirmed_nights_raw: number; day_use_nights: number; provisional_nights_raw: number }>(
+      kpiForecastTargetRows: () => query<{ yr: number; mo: number; confirmed_nights_raw: number; day_use_nights: number; provisional_nights_raw: number }>(
         `SELECT YEAR(i.date_in) AS yr, MONTH(i.date_in) AS mo,
           SUM(CASE WHEN r.status='30' THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS confirmed_nights_raw,
           COUNT(DISTINCT CASE WHEN r.status='30' AND ${dayUseLegCase('i')} THEN i.itinerary_id END) AS day_use_nights,
@@ -1315,7 +1394,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // by r.date_created, no snapshot table needed, same technique as kpiForecastPace below).
       // Both final_* and onbooks_* get their own Day Use sub-count so the delta stays internally
       // consistent (Day Use nights included on both sides of the subtraction).
-      () => query<{ yr: number; mo: number; final_nights_raw: number; final_day_use_nights: number; onbooks_nights_raw: number; onbooks_day_use_nights: number }>(
+      kpiForecastStlyRows: () => query<{ yr: number; mo: number; final_nights_raw: number; final_day_use_nights: number; onbooks_nights_raw: number; onbooks_day_use_nights: number }>(
         `SELECT YEAR(i.date_in) AS yr, MONTH(i.date_in) AS mo,
           SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS final_nights_raw,
           COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i')} THEN i.itinerary_id END) AS final_day_use_nights,
@@ -1338,7 +1417,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // r.date_created <= (today - 1yr) so it reflects what was actually on the books AT THAT
       // POINT last year, not the eventual final total — this only needs date_created (always
       // available), not a status-history snapshot (which does not exist in this schema).
-      () => queryOne<{ this_year_forward_nights: number; last_year_forward_nights_same_leadtime: number }>(
+      kpiForecastPace: () => queryOne<{ this_year_forward_nights: number; last_year_forward_nights_same_leadtime: number }>(
         `SELECT
           SUM(CASE WHEN i.date_in > CURDATE() THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS this_year_forward_nights,
           SUM(CASE WHEN i.date_in > DATE_SUB(CURDATE(), INTERVAL 1 YEAR) AND i.date_in <= CURDATE()
@@ -1362,13 +1441,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // row has one, confirming this is a reliable marker, no status-history snapshot needed) —
       // 9.7% for 2025, matching Faith's 5-10% range. Still hardcoded full year (months 1-12,
       // year=ly), NOT period-filtered, same as before.
-      () => queryOne<{ cancelled_ct: number; total_ct: number }>(
+      kpiForecastCancelLyFullYear: () => queryOne<{ cancelled_ct: number; total_ct: number }>(
         `SELECT
           COUNT(CASE WHEN status='90' AND confirmation_date IS NOT NULL THEN 1 END) AS cancelled_ct,
           COUNT(CASE WHEN confirmation_date IS NOT NULL THEN 1 END) AS total_ct
         FROM reservations
-        WHERE YEAR(date_created)=? AND rate_type NOT IN (?) AND reservation_number NOT LIKE ?`,
-        [ly, NON_REV_IDS, RES_PREFIX]
+        WHERE ${dateInFullYear('date_created', ly)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ?`,
+        [NON_REV_IDS, RES_PREFIX]
       ),
 
       // RevPAR by property (2026-07-14d) — ADDITIVE. Nights ONLY, no rate_components join, so no
@@ -1378,10 +1457,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // below (status='30', YEAR(i.date_in)=2026, i.date_out>i.date_in, same exclusions) so its
       // Room Revenue can be paired with these nights without a basis mismatch — RevPAR =
       // budgetActualByPropRows' rev ÷ PROPERTY_ROOM_COUNTS' Dennis-confirmed Available Room Nights.
-      () => query<{ property_id: string; sold_nights: number }>(
+      revparNightsRows: () => query<{ property_id: string; sold_nights: number }>(
         `SELECT i.property AS property_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS sold_nights
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status = '30' AND YEAR(i.date_in) = 2026 AND i.date_out > i.date_in
+        WHERE r.status = '30' AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
         GROUP BY i.property`,
         [NON_REV_IDS, RES_PREFIX]
@@ -1398,7 +1477,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // Piece 3. This corrected version produced plausible, verified results (Cheli & Peacock
       // -10.7%, Micato -28.1%). HAVING clause keeps rows with any volume at all; the >=20-night
       // meaningful-volume filter is applied in JS (see agentPaceGainers/Decliners below).
-      () => query<{ agent_id: string; agent_name: string; ty_nights: number; ly_nights_same_leadtime: number }>(
+      agentPaceRows: () => query<{ agent_id: string; agent_name: string; ty_nights: number; ly_nights_same_leadtime: number }>(
         `SELECT a.agent_id, a.agent_name,
           SUM(CASE WHEN i.date_in > CURDATE() AND i.date_in <= DATE_ADD(CURDATE(), INTERVAL 1 YEAR) THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS ty_nights,
           SUM(CASE WHEN i.date_in > DATE_SUB(CURDATE(), INTERVAL 1 YEAR) AND i.date_in <= CURDATE()
@@ -1429,7 +1508,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // for the cancellation-RATE denominator (59.9% -> 9.7%). Without it, a single agent (RS23)
       // showed 10,263 all-time "cancelled bookings" — re-checked with the filter: 223. Most
       // status='90' records were never genuinely confirmed, just lapsed quotes/inquiries.
-      () => query<{ agent_id: string; agent_name: string; cancelled_bookings: number; nights_lost: number }>(
+      cancelDriverNightsRows: () => query<{ agent_id: string; agent_name: string; cancelled_bookings: number; nights_lost: number }>(
         `SELECT a.agent_id, a.agent_name,
           COUNT(DISTINCT r.reservation_number) AS cancelled_bookings,
           SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nights_lost
@@ -1450,7 +1529,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // Named Cancellation Drivers' $ side — Room-Revenue-only (not blended with Extras), same
       // window/exclusions as cancelDriverNightsRows above. Separate query since it needs the
       // rate_components join (revenue-only, no nights summed here — no fan-out risk).
-      () => query<{ agent_id: string; room_rev_lost: number }>(
+      cancelDriverRevRows: () => query<{ agent_id: string; room_rev_lost: number }>(
         `SELECT a.agent_id,
           SUM(CASE WHEN ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS room_rev_lost
         FROM reservations r
@@ -1479,25 +1558,25 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // annual business" is only meaningful against a full year, same reasoning as Property
       // Performance/RevPAR's fixed-year queries. Room-Revenue-only $ (ROOM_REVENUE_CASE), same
       // basis as every other agent revenue figure on this tab.
-      () => query<{ agent_id: string; agent_name: string; total_nights: number; low_nights: number; total_revenue: number; low_revenue: number }>(
+      lowSeasonByAgentRows: () => query<{ agent_id: string; agent_name: string; total_nights: number; low_nights: number; total_revenue: number; low_revenue: number }>(
         `SELECT r.agent_id, a.agent_name,
           SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights,
-          SUM(CASE WHEN MONTH(i.date_in) IN (2,3,4,5) THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS low_nights,
+          SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, 2, 5)} THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS low_nights,
           ${ROOM_REVENUE_SUM_SQL} AS total_revenue,
-          SUM(CASE WHEN ${ROOM_REVENUE_CASE} AND MONTH(i.date_in) IN (2,3,4,5) THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS low_revenue
+          SUM(CASE WHEN ${ROOM_REVENUE_CASE} AND ${caseInYearMonthRange('i.date_in', cy, 2, 5)} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS low_revenue
         FROM reservations r
         JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         JOIN agents a ON r.agent_id = a.agent_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND YEAR(i.date_in) = ?
+        WHERE r.status = '30' AND ${dateInFullYear('i.date_in', cy)}
           AND r.agent_id NOT IN (?)
           AND a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
         GROUP BY r.agent_id, a.agent_name`,
-        [KES_RATE, KES_RATE, cy, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, KES_RATE, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Properties Produced, per agent (2026-07-14f) — ADDITIVE, Top Trade Partners table.
@@ -1505,18 +1584,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // row's period, not Agent Profile's i.date_in basis (see agentConversionRows below for why
       // that one differs). Computed portfolio-wide (all agents, not just the visible top 12) and
       // merged via Map in JS, same pattern as dayUseAgentMap above.
-      () => query<{ agent_id: string; prop_count: number }>(
+      agentPropCountRows: () => query<{ agent_id: string; prop_count: number }>(
         `SELECT r.agent_id, COUNT(DISTINCT i.property) AS prop_count
         FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
-        WHERE r.status='30' AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+        WHERE r.status='30' AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
           AND r.agent_id NOT IN (?)
           AND a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
         GROUP BY r.agent_id`,
-        [cy, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Materialisation/Conversion Rate, per agent (2026-07-14f) — ADDITIVE, Top Trade Partners
@@ -1528,7 +1607,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // built and confirmed. Denominator: status IN ('20','30') OR (status='90' AND prov_date IS
       // NOT NULL) — i.e. currently active/confirmed, or cancelled-but-was-provisional-at-some-
       // point (cancelled-straight-from-a-quote bookings correctly excluded).
-      () => query<{ agent_id: string; confirmed_ct: number; total_ct: number }>(
+      agentConversionRows: () => query<{ agent_id: string; confirmed_ct: number; total_ct: number }>(
         `SELECT agent_id,
           COUNT(CASE WHEN status='30' THEN 1 END) AS confirmed_ct,
           COUNT(*) AS total_ct
@@ -1538,7 +1617,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN itineraries i ON r.reservation_number = i.reservation_number
           JOIN agents a ON r.agent_id = a.agent_id
           WHERE (r.status IN ('20','30') OR (r.status='90' AND r.prov_date IS NOT NULL))
-            AND YEAR(i.date_in)=?
+            AND ${dateInFullYear('i.date_in', cy)}
             AND r.agent_id NOT IN (?)
             AND a.agent_name NOT IN (?)
             AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
@@ -1546,7 +1625,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
         ) deduped
         GROUP BY agent_id`,
-        [cy, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
+        [EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Extras Revenue by property (2026-07-15, Property Performance table) — ADDITIVE, portfolio-
@@ -1555,12 +1634,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // one table without a basis mismatch. rate_components-based Extras only — Day Use's
       // extras-table revenue is merged in separately below, same split as every other Extras figure
       // in this file.
-      () => query<{ property_id: string; extras: number }>(
+      extrasByPropRows: () => query<{ property_id: string; extras: number }>(
         `SELECT i.property AS property_id, ${EXTRAS_SUM_SQL} AS extras
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status = '30' AND YEAR(i.date_in) = 2026 AND i.date_out > i.date_in
+        WHERE r.status = '30' AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
         GROUP BY i.property`,
@@ -1570,14 +1649,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // Day Use / extras-table revenue by property (2026-07-15, Property Performance table) —
       // portfolio-wide sibling of AD.byProp's dayUsePropRows (which is agent-scoped) — same query,
       // just without the agent_id filter. Merged into extrasByPropRows above in JS.
-      () => query<{ property_id: string; extras: number }>(
+      dayUseExtrasByPropRows: () => query<{ property_id: string; extras: number }>(
         `SELECT i.property AS property_id,
           ${extrasTableRevenueSumSql('i', 'e', 'dt')} AS extras
         FROM itineraries i
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND YEAR(i.date_in) = 2026
+        WHERE r.status='30' AND ${dateInFullYear('i.date_in', 2026)}
         GROUP BY i.property`,
         [KES_RATE]
       ),
@@ -1587,7 +1666,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // above) so total_amount (reservation-level) isn't inflated by itinerary-leg fan-out. i.date_in
       // basis (stay date), period-filtered like every other headline revenue figure. Feeds both
       // the KPI cards (summed across months in JS) and the monthly trend chart.
-      () => query<{ m: number; confirmed_val: number; provisional_val: number; confirmed_ct: number; provisional_ct: number }>(
+      bookingConfirmedProvisionalByMonth: () => query<{ m: number; confirmed_val: number; provisional_val: number; confirmed_ct: number; provisional_ct: number }>(
         `SELECT MONTH(deduped.first_date_in) AS m,
           SUM(CASE WHEN deduped.status='30' THEN deduped.total_amount ELSE 0 END) AS confirmed_val,
           SUM(CASE WHEN deduped.status='20' THEN deduped.total_amount ELSE 0 END) AS provisional_val,
@@ -1601,14 +1680,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN itineraries i ON r.reservation_number=i.reservation_number
           JOIN agents a ON r.agent_id = a.agent_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status IN ('20','30') AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+          WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
           GROUP BY r.reservation_number, r.status, dt.currency, r.total_amount
         ) deduped
         GROUP BY MONTH(deduped.first_date_in)
         ORDER BY m`,
-        [KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Booking Status Movement — Cancelled Confirmed business by month. Exact proven
@@ -1616,7 +1695,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // by last_change_date — the validated "when cancelled" field, not date_created/updated_at).
       // No itinerary join needed (last_change_date/total_amount both live on reservations), so no
       // fan-out risk here at all.
-      () => query<{ m: number; cancelled_ct: number; cancelled_val: number }>(
+      bookingCancelledByMonth: () => query<{ m: number; cancelled_ct: number; cancelled_val: number }>(
         `SELECT MONTH(r.last_change_date) AS m,
           COUNT(DISTINCT r.reservation_number) AS cancelled_ct,
           SUM(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END) AS cancelled_val
@@ -1624,11 +1703,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         JOIN agents a ON r.agent_id = a.agent_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status='90' AND r.confirmation_date IS NOT NULL
-          AND YEAR(r.last_change_date)=? AND MONTH(r.last_change_date) BETWEEN ? AND ?
+          AND ${dateInYearMonthRange('r.last_change_date', cy, monthLo, monthHi)}
           AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_A}
         GROUP BY MONTH(r.last_change_date)
         ORDER BY m`,
-        [KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Booking Status Movement — New Confirmed bookings by month. r.date_created basis (booking
@@ -1636,7 +1715,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // stay date): this tracks bookings CREATED and already confirmed within the window, not
       // bookings STAYING within the window. No itinerary join needed at all (date_created lives
       // on reservations), same shape as PD's own monthly query above.
-      () => query<{ m: number; new_confirmed_ct: number; new_confirmed_val: number }>(
+      bookingNewConfirmedByMonth: () => query<{ m: number; new_confirmed_ct: number; new_confirmed_val: number }>(
         `SELECT MONTH(r.date_created) AS m,
           COUNT(*) AS new_confirmed_ct,
           SUM(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END) AS new_confirmed_val
@@ -1644,11 +1723,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         JOIN agents a ON r.agent_id = a.agent_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status='30' AND r.total_amount > 0
-          AND YEAR(r.date_created)=? AND MONTH(r.date_created) BETWEEN ? AND ?
+          AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
           AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_A}
         GROUP BY MONTH(r.date_created)
         ORDER BY m`,
-        [KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
+        [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // Booking Status Movement — Provisional -> Confirmed conversion (REDEFINED 2026-07-09 to
@@ -1659,7 +1738,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // r.date_created also falls inside this period — those are already counted by New Confirmed
       // (r.date_created basis). Only counts genuine conversions: created before this period, sat as
       // Provisional, confirmed with a stay date inside this period.
-      () => queryOne<{ confirmed_ct: number; total_ct: number; confirmed_val: number }>(
+      bookingConversionRow: () => queryOne<{ confirmed_ct: number; total_ct: number; confirmed_val: number }>(
         `SELECT
           COUNT(CASE WHEN status='30' AND NOT (created_yr=? AND created_mo BETWEEN ? AND ?) THEN 1 END) AS confirmed_ct,
           COUNT(*) AS total_ct,
@@ -1673,13 +1752,24 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN agents a ON r.agent_id = a.agent_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE (r.status IN ('20','30') OR (r.status='90' AND r.prov_date IS NOT NULL))
-            AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+            AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}
             AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_A}${AND_P}
         ) deduped`,
-        [cy, monthLo, monthHi, cy, monthLo, monthHi, KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX]
-      ),
-      ], 12),
+        [cy, monthLo, monthHi, cy, monthLo, monthHi, KES_RATE, NON_REV_IDS, RES_PREFIX]
+      )
+    }
 
+    const mainIds = (Object.keys(allQueries) as DashboardQueryId[]).filter((id) => id !== 'marketSegments')
+    const selectedMainIds = mainIds.filter((id) => needed.has(id))
+    const mainThunks = selectedMainIds.map((id) => allQueries[id]!)
+
+    const [mainBatchResults, marketSegmentRawRows] = await Promise.all([
+      mainThunks.length
+        ? runWithConcurrencyLimit(
+            mainThunks as unknown as Parameters<typeof runWithConcurrencyLimit>[0],
+            12
+          )
+        : Promise.resolve([] as unknown[]),
       // Market Segment Performance (2026-07-15) — one query per MARKET_SEGMENT_VALUES entry (9
       // total, including Unallocated), moved here so it runs CONCURRENTLY with the main batch
       // above rather than as a separate sequential phase after it (its own previous
@@ -1695,7 +1785,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // ADDED to it, not a replacement) — but the Topbar's own `market` filter is intentionally
       // NOT applied, since this table's entire purpose is to break results out BY segment; each
       // row overrides it with its own value.
-      runWithConcurrencyLimit(
+      needed.has('marketSegments')
+        ? runWithConcurrencyLimit(
         MARKET_SEGMENT_VALUES.map((segment) => () => {
           const segFilter = buildAgentFilterSql('a', channel, segment)
           const AND_SEG = segFilter ? ` AND ${segFilter}` : ''
@@ -1703,14 +1794,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             `SELECT rv.rv_cy, rv.rv_ly, nt.nt_cy, nt.nt_ly, ag.active_agents
             FROM (
               SELECT
-                SUM(CASE WHEN YEAR(i.date_in)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS rv_cy,
-                SUM(CASE WHEN YEAR(i.date_in)=? AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS rv_ly
+                SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS rv_cy,
+                SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', ly, monthLo, monthHi)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END) AS rv_ly
               FROM reservations r
               JOIN itineraries i ON r.reservation_number = i.reservation_number
               JOIN agents a ON r.agent_id = a.agent_id
               JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
               LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-              WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) BETWEEN ? AND ?
+              WHERE r.status = '30' AND r.agent_id IS NOT NULL AND (${dateInTwoYearMonthRange('i.date_in', cy, ly, monthLo, monthHi)})
                 AND r.agent_id NOT IN (?)
                 AND a.agent_name NOT IN (?)
                 AND r.rate_type NOT IN (?)
@@ -1718,11 +1809,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             ) rv
             CROSS JOIN (
               SELECT
-                SUM(CASE WHEN YEAR(i.date_in)=? THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nt_cy,
-                SUM(CASE WHEN YEAR(i.date_in)=? THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nt_ly
+                SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', cy, monthLo, monthHi)} THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nt_cy,
+                SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', ly, monthLo, monthHi)} THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nt_ly
               FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
               JOIN agents a ON r.agent_id = a.agent_id
-              WHERE r.status = '30' AND r.agent_id IS NOT NULL AND YEAR(i.date_in) IN (?,?) AND MONTH(i.date_in) BETWEEN ? AND ?
+              WHERE r.status = '30' AND r.agent_id IS NOT NULL AND (${dateInTwoYearMonthRange('i.date_in', cy, ly, monthLo, monthHi)})
                 AND r.agent_id NOT IN (?)
                 AND a.agent_name NOT IN (?)
                 AND r.rate_type NOT IN (?)
@@ -1733,7 +1824,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
               FROM reservations r
               JOIN itineraries i ON r.reservation_number = i.reservation_number
               JOIN agents a ON r.agent_id = a.agent_id
-              WHERE r.status IN ('20','30') AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ?
+              WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)}
                 AND r.agent_id NOT IN (?)
                 AND a.agent_name NOT IN (?)
                 AND r.rate_type NOT IN (?)
@@ -1741,78 +1832,98 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
                 AND r.total_amount > 0${AND_SEG}
             ) ag`,
             [
-              cy, KES_RATE, ly, KES_RATE, cy, ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, NON_REV_IDS, RES_PREFIX,
-              cy, ly, cy, ly, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, NON_REV_IDS, RES_PREFIX,
-              cy, monthLo, monthHi, EX_AGENT_IDS, EX_AGENT_NAMES, NON_REV_IDS, RES_PREFIX,
-            ]
+          KES_RATE,
+          KES_RATE,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_IDS,
+          EX_AGENT_NAMES,
+          NON_REV_IDS,
+          RES_PREFIX
+        ]
           )
         }),
-        5
-      ),
+            5
+          )
+        : Promise.resolve([] as Array<{ rv_cy: number; rv_ly: number; nt_cy: number; nt_ly: number; active_agents: number } | null>),
     ])
 
-    const [
-      pdRows,
-      pfRows,
-      ocPropRows,
-      arrRows,
-      dayUseArrRows,
-      agRows,
-      dayUseAgentRows,
-      agLyRows,
-      agPropRows,
-      dayUsePropRows,
-      agMonthRows,
-      dayUseAgentMonthRows,
-      occMonthRows,
-      adrRows,
-      chRows,
-      plfRow,
-      ytdRow,
-      pltRows,
-      cdRows,
-      kpiConfirmed,
-      kpiRevNights,
-      kpiTotalRevFullYear,
-      kpiBudgetActual,
-      budgetActualByPropRows,
-      kpiAgents,
-      kpiPipeline,
-      kpiLead,
-      kpiAgentRev,
-      kpiConsult,
-      kpiLyBkgs,
-      kpiAgentsLy,
-      kpiAgentRevLy,
-      kpiRevNightsLy,
-      kpiLeadLy,
-      kpiConsultLy,
-      cdLyRows,
-      kpiConfirmedBounded,
-      kpiConfirmedStly,
-      kpiPipelineStly,
-      kpiCancel,
-      kpiCancelLy,
-      kpiForecastTargetRows,
-      kpiForecastStlyRows,
-      kpiForecastPace,
-      kpiForecastCancelLyFullYear,
-      revparNightsRows,
-      agentPaceRows,
-      cancelDriverNightsRows,
-      cancelDriverRevRows,
-      lowSeasonByAgentRows,
-      agentPropCountRows,
-      agentConversionRows,
-      extrasByPropRows,
-      dayUseExtrasByPropRows,
-      bookingConfirmedProvisionalByMonth,
-      bookingCancelledByMonth,
-      bookingNewConfirmedByMonth,
-      bookingConversionRow,
-    ] = mainBatchResults
+    const mainResultById = new Map<string, unknown>()
+    selectedMainIds.forEach((id, idx) => {
+      mainResultById.set(id, (mainBatchResults as unknown[])[idx])
+    })
+    const qArr = <T,>(id: DashboardQueryId): T[] => (mainResultById.get(id) as T[] | undefined) ?? []
+    const qOne = <T,>(id: DashboardQueryId): T | null => (mainResultById.get(id) as T | null | undefined) ?? null
 
-    const marketSegmentRaw = MARKET_SEGMENT_VALUES.map((segment, idx) => ({ segment, row: marketSegmentRawRows[idx] }))
+
+    const pdRows = qArr<{ m: number; mn: string; actual: number; ly_val: number }>('pdRows')
+    const pfRows = qArr<{ mo: string; yr: number; mon: number; cf: number; pv: number; cf_val: number; pv_val: number }>('pfRows')
+    const ocPropRows = qArr<{ nm: string; property_id: string; bkgs: number; adr: number }>('ocPropRows')
+    const arrRows = qArr<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>('arrRows')
+    const dayUseArrRows = qArr<{ m: number; extras: number; extras_ly: number }>('dayUseArrRows')
+    const agRows = qArr<{ ag_id: string; nm: string; rv_raw: number; extras_raw: number; nt: number; adr: number; r_adr: number; agent_physical_country: string | null; agent_postal_country: string | null }>('agRows')
+    const dayUseAgentRows = qArr<{ agent_id: string; extras: number }>('dayUseAgentRows')
+    const agLyRows = qArr<{ nm: string; rv_raw: number }>('agLyRows')
+    const agPropRows = qArr<{ pr: string; property_id: string; rv: number; ly_val: number; extras: number; extras_ly: number }>('agPropRows')
+    const dayUsePropRows = qArr<{ property_id: string; extras: number; extras_ly: number }>('dayUsePropRows')
+    const agMonthRows = qArr<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>('agMonthRows')
+    const dayUseAgentMonthRows = qArr<{ m: number; extras: number; extras_ly: number }>('dayUseAgentMonthRows')
+    const occMonthRows = qArr<{ m: number; mn: string; act: number; ly_val: number }>('occMonthRows')
+    const adrRows = qArr<{ m: number; mn: string; nr: number; res: number }>('adrRows')
+    const chRows = qArr<{ ch: string; cnt: number }>('chRows')
+    const plfRow = qOne<Record<string, unknown>>('plfRow')
+    const ytdRow = qOne<{ ytd_ct: number; ytd_val: number }>('ytdRow')
+    const pltRows = qArr<{ ag: string; agent_id: string; pr: string; property_id: string; ci: Date; nt: number; vl: number; st: string }>('pltRows')
+    const cdRows = qArr<{ code: string; display_name: string | null; bk: number; rv: number; extras: number; cv: number }>('cdRows')
+    const kpiConfirmed = qOne<{ confirmed_bkgs: number }>('kpiConfirmed')
+    const kpiRevNights = qOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>('kpiRevNights')
+    const kpiTotalRevFullYear = qOne<{ rev_raw: number }>('kpiTotalRevFullYear')
+    const kpiBudgetActual = qOne<{ mtd_rev: number; ytd_rev: number }>('kpiBudgetActual')
+    const budgetActualByPropRows = qArr<{ property_id: string; rev: number }>('budgetActualByPropRows')
+    const kpiAgents = qOne<{ active_agents: number }>('kpiAgents')
+    const kpiPipeline = qOne<{ pipeline_raw: number; pipeline_opps: number }>('kpiPipeline')
+    const kpiLead = qOne<{ avg_lead: number }>('kpiLead')
+    const kpiAgentRev = qOne<{ arev_raw: number; extras_raw: number; extras_table_revenue: number; port_adr: number; avg_stay: number }>('kpiAgentRev')
+    const kpiConsult = qOne<{ n_consult: number; total_bkgs: number }>('kpiConsult')
+    const kpiLyBkgs = qOne<{ cnt: number }>('kpiLyBkgs')
+    const kpiAgentsLy = qOne<{ active_agents: number }>('kpiAgentsLy')
+    const kpiAgentRevLy = qOne<{ arev_raw: number; extras_raw: number; extras_table_revenue: number; port_adr: number; avg_stay: number }>('kpiAgentRevLy')
+    const kpiRevNightsLy = qOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>('kpiRevNightsLy')
+    const kpiLeadLy = qOne<{ avg_lead: number }>('kpiLeadLy')
+    const kpiConsultLy = qOne<{ n_consult: number; total_bkgs: number }>('kpiConsultLy')
+    const cdLyRows = qArr<{ nm: string; rv: number }>('cdLyRows')
+    const kpiConfirmedBounded = qOne<{ confirmed_bkgs: number }>('kpiConfirmedBounded')
+    const kpiConfirmedStly = qOne<{ confirmed_bkgs: number }>('kpiConfirmedStly')
+    const kpiPipelineStly = qOne<{ pipeline_raw: number; pipeline_opps: number }>('kpiPipelineStly')
+    const kpiCancel = qOne<{ cancelled_ct: number; total_ct: number }>('kpiCancel')
+    const kpiCancelLy = qOne<{ cancelled_ct: number; total_ct: number }>('kpiCancelLy')
+    const kpiForecastTargetRows = qArr<{ yr: number; mo: number; confirmed_nights_raw: number; day_use_nights: number; provisional_nights_raw: number }>('kpiForecastTargetRows')
+    const kpiForecastStlyRows = qArr<{ yr: number; mo: number; final_nights_raw: number; final_day_use_nights: number; onbooks_nights_raw: number; onbooks_day_use_nights: number }>('kpiForecastStlyRows')
+    const kpiForecastPace = qOne<{ this_year_forward_nights: number; last_year_forward_nights_same_leadtime: number }>('kpiForecastPace')
+    const kpiForecastCancelLyFullYear = qOne<{ cancelled_ct: number; total_ct: number }>('kpiForecastCancelLyFullYear')
+    const revparNightsRows = qArr<{ property_id: string; sold_nights: number }>('revparNightsRows')
+    const agentPaceRows = qArr<{ agent_id: string; agent_name: string; ty_nights: number; ly_nights_same_leadtime: number }>('agentPaceRows')
+    const cancelDriverNightsRows = qArr<{ agent_id: string; agent_name: string; cancelled_bookings: number; nights_lost: number }>('cancelDriverNightsRows')
+    const cancelDriverRevRows = qArr<{ agent_id: string; room_rev_lost: number }>('cancelDriverRevRows')
+    const lowSeasonByAgentRows = qArr<{ agent_id: string; agent_name: string; low_nights: number; low_revenue: number; total_nights: number; total_revenue: number }>('lowSeasonByAgentRows')
+    const agentPropCountRows = qArr<{ agent_id: string; prop_count: number }>('agentPropCountRows')
+    const agentConversionRows = qArr<{ agent_id: string; confirmed_ct: number; total_ct: number }>('agentConversionRows')
+    const extrasByPropRows = qArr<{ property_id: string; extras: number }>('extrasByPropRows')
+    const dayUseExtrasByPropRows = qArr<{ property_id: string; extras: number }>('dayUseExtrasByPropRows')
+    const bookingConfirmedProvisionalByMonth = qArr<{ m: number; confirmed_val: number; provisional_val: number; confirmed_ct: number; provisional_ct: number }>('bookingConfirmedProvisionalByMonth')
+    const bookingCancelledByMonth = qArr<{ m: number; cancelled_val: number; cancelled_ct: number }>('bookingCancelledByMonth')
+    const bookingNewConfirmedByMonth = qArr<{ m: number; new_confirmed_val: number; new_confirmed_ct: number }>('bookingNewConfirmedByMonth')
+    const bookingConversionRow = qOne<{ confirmed_ct: number; total_ct: number; confirmed_val: number }>('bookingConversionRow')
+
+    const marketSegmentRaw = needed.has('marketSegments')
+      ? MARKET_SEGMENT_VALUES.map((segment, idx) => ({ segment, row: (marketSegmentRawRows as Array<{ rv_cy: number; rv_ly: number; nt_cy: number; nt_ly: number; active_agents: number } | null>)[idx] }))
+      : []
 
     // ── Assemble PD ───────────────────────────────────────────────────────────
     const PD = {
@@ -2527,7 +2638,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // back but NOT yet applied to query results beyond 'all' — see Part 2 investigation for why.
     return NextResponse.json({
       ...data,
-      appliedFilters: { year: cy, period, monthRange: [monthLo, monthHi], channel, market },
+      appliedFilters: { year: cy, period, monthRange: [monthLo, monthHi], channel, market, property, view },
     })
   } catch (err) {
     console.error('[dashboard API]', err)

@@ -3,6 +3,14 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { queryOne } from '@/lib/db'
 import {
+  dateInYearMonthRange,
+  dateInTwoYearMonthRange,
+  dateInYearThroughMonth,
+  dateInTwoYearsThroughMonth,
+  dateInFullYear,
+  caseInYearMonthRange,
+} from '@/lib/dateRange'
+import {
   KES_USD_RATE,
   EXCLUDED_RESERVATION_PREFIX,
   NON_REVENUE_RATE_TYPE_IDS,
@@ -80,11 +88,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?
             AND rc.component_description IN (?)`,
-          [KES_RATE, cy, monthLo, monthHi, NON_REV_IDS, RES_PREFIX, g.components]
+          [KES_RATE, NON_REV_IDS, RES_PREFIX, g.components]
         )
       )),
       Promise.all(categoryGroups.map((g) =>
@@ -92,10 +100,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           `SELECT SUM(IFNULL(CASE WHEN dt.currency='KES' THEN i.total_gross_amount/? ELSE i.total_gross_amount END,0)) AS amount
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-          WHERE r.status = '30' AND YEAR(i.date_in)=? AND MONTH(i.date_in) BETWEEN ? AND ? AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out > i.date_in
             AND r.reservation_number NOT LIKE ?
             AND r.rate_type IN (?)`,
-          [KES_RATE, cy, monthLo, monthHi, RES_PREFIX, g.rateTypes]
+          [KES_RATE, RES_PREFIX, g.rateTypes]
         )
       )),
     ])
