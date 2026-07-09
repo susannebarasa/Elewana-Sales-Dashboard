@@ -52,7 +52,15 @@ const safePct = (num: number, den: number): number =>
 // a hit — see todayStr below, now date+time (not just date) specifically so the Topbar's "Data as
 // at" label makes a few-minutes-stale cache visible, per the user's explicit "don't let this look
 // real-time" instruction.
-const DASHBOARD_CACHE_TTL_MS = 3 * 60 * 1000
+// TEMPORARY bump (2026-07-09, same-day mitigation) — cold-load latency degraded to 84-90s today
+// (was ~35s per the 2026-07-15 DB-performance investigation), long enough to hit Node's default
+// request/header timeout and truncate the response client-side ("Unexpected end of JSON input").
+// Extended from 3 to 20 minutes to survive through today's meeting without a real fix to the
+// underlying DB-side contention. Does NOT violate the original "don't let this look real-time"
+// instruction — the Topbar's "Data as at" timestamp still makes staleness visible regardless of
+// TTL length, just up to ~20 min old instead of ~3. Revert to 3 * 60 * 1000 once the real fix
+// (query optimization / proper caching layer, already flagged for Clint/CloudWatch) lands.
+const DASHBOARD_CACHE_TTL_MS = 20 * 60 * 1000
 const dashboardCache = new Map<string, { data: DashboardData; cachedAt: number }>()
 
 // Property filter (2026-07-09) — known-good propertyId set, same source of truth as
