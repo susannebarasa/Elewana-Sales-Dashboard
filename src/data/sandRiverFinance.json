@@ -4,62 +4,648 @@
     "propertyId": "WB640",
     "operatorLabel": "Operated by Elewana Collection"
   },
-  "reportPeriod": null,
+  "reportPeriod": {
+    "label": "Jun",
+    "month": 6,
+    "year": 2026
+  },
   "kpis": {
     "m": {
-      "netRevenue": { "status": "ndl", "value": null, "budget": 372109, "varianceAbs": null, "variancePct": null, "rag": null },
-      "contributionToHO": { "status": "ndl", "value": null, "budget": 158569, "varianceAbs": null, "variancePct": null, "rag": null },
-      "ebitda": { "status": "ndl", "value": null, "budget": 158569, "varianceAbs": null, "variancePct": null, "rag": null },
-      "netProfit": { "status": "ndl", "value": null, "budget": 122825, "varianceAbs": null, "variancePct": null, "rag": null }
+      "netRevenue": {
+        "status": "ok",
+        "value": 388793,
+        "budget": 372109,
+        "lastYear": 456943,
+        "varianceAbs": 16684,
+        "variancePct": 4.5,
+        "rag": "green"
+      },
+      "contributionToHO": {
+        "status": "ok",
+        "value": 171058,
+        "budget": 158569,
+        "lastYear": 225705,
+        "varianceAbs": 12489,
+        "variancePct": 7.9,
+        "rag": "green"
+      },
+      "ebitda": {
+        "status": "ok",
+        "value": 60058,
+        "budget": 158569,
+        "lastYear": 150705,
+        "varianceAbs": -98511,
+        "variancePct": -62.1,
+        "rag": "deepRed"
+      },
+      "netProfit": {
+        "status": "ok",
+        "value": 24523,
+        "budget": 122825,
+        "lastYear": 112993,
+        "varianceAbs": -98302,
+        "variancePct": -80.0,
+        "rag": "deepRed"
+      }
     },
     "y": {
-      "netRevenue": { "status": "ndl", "value": null, "budget": 1737499, "varianceAbs": null, "variancePct": null, "rag": null },
-      "contributionToHO": { "status": "ndl", "value": null, "budget": 595099, "varianceAbs": null, "variancePct": null, "rag": null },
-      "ebitda": { "status": "ndl", "value": null, "budget": 595099, "varianceAbs": null, "variancePct": null, "rag": null },
-      "netProfit": { "status": "ndl", "value": null, "budget": 376617, "varianceAbs": null, "variancePct": null, "rag": null }
+      "netRevenue": {
+        "status": "ok",
+        "value": 1502469,
+        "budget": 1737499,
+        "lastYear": 1482658,
+        "varianceAbs": -235030,
+        "variancePct": -13.5,
+        "rag": "red"
+      },
+      "contributionToHO": {
+        "status": "ok",
+        "value": 460002,
+        "budget": 595099,
+        "lastYear": 463722,
+        "varianceAbs": -135097,
+        "variancePct": -22.7,
+        "rag": "deepRed"
+      },
+      "ebitda": {
+        "status": "ok",
+        "value": -49744,
+        "budget": 595099,
+        "lastYear": -41136,
+        "varianceAbs": -644843,
+        "variancePct": -108.4,
+        "rag": "deepRed"
+      },
+      "netProfit": {
+        "status": "ok",
+        "value": -263749,
+        "budget": 376617,
+        "lastYear": -262815,
+        "varianceAbs": -640367,
+        "variancePct": -170.0,
+        "rag": "deepRed"
+      }
     },
     "a": {
-      "netRevenue": { "status": "ndl", "value": null, "budget": 5317613, "varianceAbs": null, "variancePct": null, "rag": null },
-      "contributionToHO": { "status": "ndl", "value": null, "budget": 2320413, "varianceAbs": null, "variancePct": null, "rag": null },
-      "ebitda": { "status": "ndl", "value": null, "budget": 2320413, "varianceAbs": null, "variancePct": null, "rag": null },
-      "netProfit": { "status": "ndl", "value": null, "budget": 1875723, "varianceAbs": null, "variancePct": null, "rag": null }
+      "netRevenue": {
+        "status": "ok",
+        "value": 4899531,
+        "budget": 5317613,
+        "lastYear": 4791216,
+        "varianceAbs": -418082,
+        "variancePct": -7.9,
+        "rag": "red"
+      },
+      "contributionToHO": {
+        "status": "ok",
+        "value": 2079307,
+        "budget": 2320413,
+        "lastYear": 2006703,
+        "varianceAbs": -241106,
+        "variancePct": -10.4,
+        "rag": "red"
+      },
+      "ebitda": {
+        "status": "ok",
+        "value": 1344561,
+        "budget": 2320413,
+        "lastYear": 1075645,
+        "varianceAbs": -975852,
+        "variancePct": -42.1,
+        "rag": "red"
+      },
+      "netProfit": {
+        "status": "ok",
+        "value": 905714,
+        "budget": 1875723,
+        "lastYear": 614000,
+        "varianceAbs": -970008,
+        "variancePct": -51.7,
+        "rag": "red"
+      }
     }
   },
-  "narrative": null,
+  "narrative": {
+    "headline": "June YTD Net Revenue is running 13.5% behind budget, but Net Profit has swung to a $263.7K loss \u2014 a $640.4K miss vs a $376.6K budgeted profit.",
+    "body": "Year-to-date Net Revenue of $1.50M is 1.3% ahead of the same period last year, even while running 13.5% short of budget. Further down the P&L, a Head Office cost charge with zero budget this year ($509.7K actual vs $0 budgeted) is the single largest driver pulling EBITDA to a $49.7K loss (a $644.8K miss vs budget) and Net Profit to a loss \u2014 both now behind budget AND last year, per the RAG classification. Re-extracted directly from the SRM tab of the June 2026 MIS workbook; not yet independently reviewed.",
+    "pills": [
+      {
+        "label": "June Occupancy",
+        "value": "65.0%"
+      },
+      {
+        "label": "Cost per $1 Revenue (MTD)",
+        "value": "$0.76"
+      },
+      {
+        "label": "YTD EBITDA Gap to Budget",
+        "value": "-$645K"
+      }
+    ]
+  },
   "charts": {
-    "cumulativeRevenuePace": "budget-only",
-    "monthlyCostStack": "budget-only",
-    "netProfitWaterfall": "ndl"
+    "cumulativeRevenuePace": "ok",
+    "monthlyCostStack": "ok",
+    "netProfitWaterfall": "ok"
   },
   "monthlyBudget": {
-    "months": ["Dec 2025","Jan 2026","Feb 2026","Mar 2026","Apr 2026","May 2026","Jun 2026","Jul 2026","Aug 2026","Sep 2026","Oct 2026","Nov 2026"],
-    "revenue": [373657,355286,227147,177227,232073,372109,767939,777693,667036,687128,321862,358454],
-    "managedCosts": [-159481,-156564,-132058,-132477,-154932,-161235,-278695,-296554,-260684,-277663,-182545,-194252],
-    "imposedCosts": [-130039,-121732,-80202,-67335,-82080,-131553,-234706,-229732,-193299,-192023,-91798,-107842]
+    "months": [
+      "Jan 2026",
+      "Feb 2026",
+      "Mar 2026",
+      "Apr 2026",
+      "May 2026",
+      "Jun 2026",
+      "Jul 2026",
+      "Aug 2026",
+      "Sep 2026",
+      "Oct 2026",
+      "Nov 2026",
+      "Dec 2026"
+    ],
+    "revenue": [
+      373657,
+      355286,
+      227147,
+      177227,
+      232073,
+      372109,
+      767939,
+      777693,
+      667036,
+      687128,
+      321862,
+      358454
+    ],
+    "managedCosts": [
+      -159481,
+      -156564,
+      -132058,
+      -132477,
+      -154932,
+      -161235,
+      -278695,
+      -296554,
+      -260684,
+      -277663,
+      -182545,
+      -194252
+    ],
+    "imposedCosts": [
+      -130039,
+      -121732,
+      -80202,
+      -67335,
+      -82080,
+      -131553,
+      -234706,
+      -229732,
+      -193299,
+      -192023,
+      -91798,
+      -107842
+    ]
   },
-  "monthlyActual": null,
+  "monthlyActual": {
+    "months": [
+      "Jan 2026",
+      "Feb 2026",
+      "Mar 2026",
+      "Apr 2026",
+      "May 2026",
+      "Jun 2026",
+      "Jul 2026",
+      "Aug 2026",
+      "Sep 2026",
+      "Oct 2026",
+      "Nov 2026",
+      "Dec 2026"
+    ],
+    "revenue": [
+      363940,
+      284075,
+      153252,
+      85268,
+      227141,
+      388793,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "managedCosts": [
+      -145705,
+      -131671,
+      -114326,
+      -98724,
+      -148879,
+      -166151,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "imposedCosts": [
+      -121413,
+      -119329,
+      -52157,
+      -34240,
+      -82366,
+      -129959,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
   "plLines": [
-    { "key": "grossRevenue",     "label": "Total Gross Revenue",        "section": "revenue", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": 451357, "y": 2104787, "a": 6369895 }, "variance": null },
-    { "key": "netRoomRevenue",   "label": "Total Net Room Revenue",     "section": "revenue", "detailOnly": true,  "status": "ndl", "value": null, "budget": { "m": 301441, "y": 1386186, "a": 4009275 }, "variance": null },
-    { "key": "netExtraSales",    "label": "Total Net Extra Sales",      "section": "revenue", "detailOnly": true,  "status": "ndl", "value": null, "budget": { "m": 27146, "y": 135264, "a": 347013 }, "variance": null },
-    { "key": "netRevenue",       "label": "Total Net Revenue",          "section": "revenue", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": 372109, "y": 1737499, "a": 5317613 }, "variance": null },
-
-    { "key": "variableCosts",    "label": "Variable Costs Sub Total",   "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": { "m": 29716, "y": 161591, "a": 358935 }, "variance": null },
-    { "key": "staffCosts",       "label": "Total Staff Cost",           "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": { "m": 52386, "y": 327270, "a": 659600 }, "variance": null },
-    { "key": "fixedCosts",       "label": "Fixed Cost Sub Total",       "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": { "m": 11674, "y": 67172, "a": 142745 }, "variance": null },
-    { "key": "otherCosts",       "label": "Other Cost Sub Total",       "section": "costs", "detailOnly": true,  "status": "ndl", "value": null, "budget": { "m": 66389, "y": 317346, "a": 742145 }, "variance": null },
-    { "key": "managedCosts",     "label": "Managed Costs",              "section": "costs", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": -161235, "y": -896747, "a": -2387140 }, "variance": null },
-    { "key": "imposedCosts",     "label": "Imposed Costs",              "section": "costs", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": -131553, "y": -612941, "a": -1662342 }, "variance": null },
-
-    { "key": "contribution",    "label": "Contribution",               "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": 158569, "y": 595099, "a": 2320413 }, "variance": null },
-    { "key": "hoCosts",         "label": "HO Costs",                    "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": 0, "y": 0, "a": 0 }, "variance": null },
-    { "key": "ebitda",          "label": "EBITDA",                      "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": 158569, "y": 595099, "a": 2320413 }, "variance": null },
-    { "key": "da",              "label": "D&A",                         "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": -20928, "y": -125568, "a": -263304 }, "variance": null },
-    { "key": "financeCost",     "label": "Finance Cost",                "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": -14816, "y": -92914, "a": -181386 }, "variance": null },
-    { "key": "nop",             "label": "NOP",                         "section": "summary", "detailOnly": false, "status": "ndl", "value": null, "budget": { "m": 122825, "y": 376617, "a": 1875723 }, "variance": null },
-
-    { "key": "topDriver1",      "label": "Top revenue/cost driver #1 (TBD)", "section": "drivers", "detailOnly": true, "status": "ndl", "value": null, "budget": null, "variance": null },
-    { "key": "topDriver2",      "label": "Top revenue/cost driver #2 (TBD)", "section": "drivers", "detailOnly": true, "status": "ndl", "value": null, "budget": null, "variance": null },
-    { "key": "topDriver3",      "label": "Top revenue/cost driver #3 (TBD)", "section": "drivers", "detailOnly": true, "status": "ndl", "value": null, "budget": null, "variance": null }
+    {
+      "key": "grossRevenue",
+      "label": "Total Gross Revenue",
+      "section": "revenue",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": 467168,
+        "y": 1804922,
+        "a": 5886782
+      },
+      "budget": {
+        "m": 451357,
+        "y": 2104787,
+        "a": 6369895
+      },
+      "variance": {
+        "m": 15811,
+        "y": -299865,
+        "a": -483113
+      }
+    },
+    {
+      "key": "netRoomRevenue",
+      "label": "Total Net Room Revenue",
+      "section": "revenue",
+      "detailOnly": true,
+      "status": "ok",
+      "value": {
+        "m": 305299,
+        "y": 1201574,
+        "a": 3679551
+      },
+      "budget": {
+        "m": 301441,
+        "y": 1386186,
+        "a": 4009275
+      },
+      "variance": {
+        "m": 3858,
+        "y": -184612,
+        "a": -329724
+      }
+    },
+    {
+      "key": "netExtraSales",
+      "label": "Total Net Extra Sales",
+      "section": "revenue",
+      "detailOnly": true,
+      "status": "ok",
+      "value": {
+        "m": 32315,
+        "y": 99683,
+        "a": 323963
+      },
+      "budget": {
+        "m": 27146,
+        "y": 135264,
+        "a": 347013
+      },
+      "variance": {
+        "m": 5169,
+        "y": -35581,
+        "a": -23050
+      }
+    },
+    {
+      "key": "netRevenue",
+      "label": "Total Net Revenue",
+      "section": "revenue",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": 388793,
+        "y": 1502469,
+        "a": 4899531
+      },
+      "budget": {
+        "m": 372109,
+        "y": 1737499,
+        "a": 5317613
+      },
+      "variance": {
+        "m": 16684,
+        "y": -235030,
+        "a": -418082
+      }
+    },
+    {
+      "key": "variableCosts",
+      "label": "Variable Costs Sub Total",
+      "section": "costs",
+      "detailOnly": true,
+      "status": "ok",
+      "value": {
+        "m": 30187,
+        "y": 138772,
+        "a": 320595
+      },
+      "budget": {
+        "m": 29716,
+        "y": 161591,
+        "a": 358935
+      },
+      "variance": {
+        "m": 471,
+        "y": -22819,
+        "a": -38340
+      }
+    },
+    {
+      "key": "staffCosts",
+      "label": "Total Staff Cost",
+      "section": "costs",
+      "detailOnly": true,
+      "status": "ok",
+      "value": {
+        "m": 49582,
+        "y": 301303,
+        "a": 621935
+      },
+      "budget": {
+        "m": 52386,
+        "y": 327270,
+        "a": 659600
+      },
+      "variance": {
+        "m": -2804,
+        "y": -25967,
+        "a": -37665
+      }
+    },
+    {
+      "key": "fixedCosts",
+      "label": "Fixed Cost Sub Total",
+      "section": "costs",
+      "detailOnly": true,
+      "status": "ok",
+      "value": {
+        "m": 12462,
+        "y": 94085,
+        "a": 167913
+      },
+      "budget": {
+        "m": 11674,
+        "y": 67172,
+        "a": 142745
+      },
+      "variance": {
+        "m": 788,
+        "y": 26913,
+        "a": 25167
+      }
+    },
+    {
+      "key": "otherCosts",
+      "label": "Other Cost Sub Total",
+      "section": "costs",
+      "detailOnly": true,
+      "status": "ok",
+      "value": {
+        "m": 67418,
+        "y": 280761,
+        "a": 697229
+      },
+      "budget": {
+        "m": 66389,
+        "y": 317346,
+        "a": 742145
+      },
+      "variance": {
+        "m": 1029,
+        "y": -36586,
+        "a": -44916
+      }
+    },
+    {
+      "key": "managedCosts",
+      "label": "Managed Costs",
+      "section": "costs",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": -166151,
+        "y": -805456,
+        "a": -2232056
+      },
+      "budget": {
+        "m": -161235,
+        "y": -896747,
+        "a": -2387140
+      },
+      "variance": {
+        "m": -4916,
+        "y": 91292,
+        "a": 155084
+      }
+    },
+    {
+      "key": "imposedCosts",
+      "label": "Imposed Costs",
+      "section": "costs",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": -129959,
+        "y": -539464,
+        "a": -1575419
+      },
+      "budget": {
+        "m": -131553,
+        "y": -612941,
+        "a": -1662342
+      },
+      "variance": {
+        "m": 1594,
+        "y": 73477,
+        "a": 86923
+      }
+    },
+    {
+      "key": "contribution",
+      "label": "Contribution",
+      "section": "summary",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": 171058,
+        "y": 460002,
+        "a": 2079307
+      },
+      "budget": {
+        "m": 158569,
+        "y": 595099,
+        "a": 2320413
+      },
+      "variance": {
+        "m": 12489,
+        "y": -135097,
+        "a": -241106
+      }
+    },
+    {
+      "key": "hoCosts",
+      "label": "HO Costs",
+      "section": "summary",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": -111000,
+        "y": -509746,
+        "a": -734746
+      },
+      "budget": {
+        "m": 0,
+        "y": 0,
+        "a": 0
+      },
+      "variance": {
+        "m": -111000,
+        "y": -509746,
+        "a": -734746
+      }
+    },
+    {
+      "key": "ebitda",
+      "label": "EBITDA",
+      "section": "summary",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": 60058,
+        "y": -49744,
+        "a": 1344561
+      },
+      "budget": {
+        "m": 158569,
+        "y": 595099,
+        "a": 2320413
+      },
+      "variance": {
+        "m": -98511,
+        "y": -644843,
+        "a": -975852
+      }
+    },
+    {
+      "key": "da",
+      "label": "D&A",
+      "section": "summary",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": -21905,
+        "y": -130720,
+        "a": -269872
+      },
+      "budget": {
+        "m": -20928,
+        "y": -125568,
+        "a": -263304
+      },
+      "variance": {
+        "m": -977,
+        "y": -5152,
+        "a": -6568
+      }
+    },
+    {
+      "key": "financeCost",
+      "label": "Finance Cost",
+      "section": "summary",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": -13856,
+        "y": -83497,
+        "a": -169187
+      },
+      "budget": {
+        "m": -14816,
+        "y": -92914,
+        "a": -181386
+      },
+      "variance": {
+        "m": 960,
+        "y": 9416,
+        "a": 12199
+      }
+    },
+    {
+      "key": "nop",
+      "label": "NOP",
+      "section": "summary",
+      "detailOnly": false,
+      "status": "ok",
+      "value": {
+        "m": 24523,
+        "y": -263749,
+        "a": 905714
+      },
+      "budget": {
+        "m": 122825,
+        "y": 376617,
+        "a": 1875723
+      },
+      "variance": {
+        "m": -98302,
+        "y": -640367,
+        "a": -970008
+      }
+    },
+    {
+      "key": "topDriver1",
+      "label": "Top revenue/cost driver #1 (TBD)",
+      "section": "drivers",
+      "detailOnly": true,
+      "status": "ndl",
+      "value": null,
+      "budget": null,
+      "variance": null
+    },
+    {
+      "key": "topDriver2",
+      "label": "Top revenue/cost driver #2 (TBD)",
+      "section": "drivers",
+      "detailOnly": true,
+      "status": "ndl",
+      "value": null,
+      "budget": null,
+      "variance": null
+    },
+    {
+      "key": "topDriver3",
+      "label": "Top revenue/cost driver #3 (TBD)",
+      "section": "drivers",
+      "detailOnly": true,
+      "status": "ndl",
+      "value": null,
+      "budget": null,
+      "variance": null
+    }
   ]
 }

@@ -27,25 +27,26 @@ import { RAG_DEEP_RED, CHART_COLORS } from '@/lib/designTokens'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip)
 
-// Finance (Sand River, 2026-07-16) — standalone tab, entirely independent of the shared
-// /api/dashboard payload (see page.tsx's renderContent — this is checked before the
-// loading/error/data gates for exactly that reason).
+// Finance (Sand River) — standalone tab, entirely independent of the shared /api/dashboard
+// payload (see page.tsx's renderContent — this is checked before the loading/error/data gates
+// for exactly that reason).
 //
-// DATA STATUS (confirmed 2026-07-16 against the real SRM_Financial_Data.xlsx): Actual and Last
-// Year figures are broken sheet-wide (a "No Selection" month-selector cell), so they stay NDL
-// today. Budget IS real and fully populated — shown as the reference figure on KPI cards.
+// DATA STATUS (re-extracted 2026-07-10): the prior "No Selection" sheet bug is fixed — Actual,
+// Budget, and Last Year are all real now (see the header comment in sandRiverFinance.ts for the
+// exact row/column mapping). All 3 charts and all 4 KPI cards currently render their 'ok' branch.
 //
 // Chart rendering below is driven ENTIRELY by data.charts.{cumulativeRevenuePace,monthlyCostStack,
-// netProfitWaterfall} (a ChartStatus each — 'ndl' | 'budget-only' | 'ok'), not by today's data
-// happening to be all-NDL — so once the upstream sheet issue is fixed and getSandRiverFinance()
-// starts returning 'ok' + real monthlyActual/plLines values, these charts upgrade to the real
-// two-series/waterfall view with no further code change:
+// netProfitWaterfall} (a ChartStatus each — 'ndl' | 'budget-only' | 'ok'), NOT by assuming today's
+// data shape — if a future re-extraction ever regresses (e.g. the sheet breaks again for one
+// property), these branches still degrade correctly with no code change:
 //   - 'ndl': neither Actual nor Budget known for that chart → EmptyState.
-//   - 'budget-only': Budget known, Actual not → single Budget-only series (today's real state).
-//   - 'ok': both known → real Actual series alongside the Budget reference.
+//   - 'budget-only': Budget known, Actual not → single Budget-only series.
+//   - 'ok': both known → real Actual series alongside the Budget reference (current state).
 // The Net Profit Waterfall is inherently a variance chart (every bar is an Actual-minus-Budget
 // delta) — 'budget-only' can't produce a meaningful bridge either, so it renders as EmptyState
-// alongside 'ndl'; only 'ok' draws the real waterfall (built from plLines' Actual values).
+// alongside 'ndl'; only 'ok' draws the real waterfall, built to the exact 6-bar spec in the
+// source SKILL.md §17 (Budget NP → Revenue Var → Managed Cost Var → Imposed Cost Var → HO Cost
+// Var → Actual NP) — see buildWaterfallSteps below.
 // RECON (ResRequest vs MIS comparison), the AI Query Box, and any MotherDuck/DuckDB queries are
 // explicitly out of scope — never build them here.
 
@@ -121,8 +122,8 @@ function FinanceKpiCard({ label, metric }: { label: string; metric: FinanceMetri
     )
   }
 
-  // 'ok' / 'tbc' — not reachable with today's Actual-still-broken dataset, kept ready for when
-  // the upstream "No Selection" sheet issue is fixed.
+  // 'ok' — the live branch now that Actual data is real. 'tbc' stays kept-ready (no current
+  // Finance line item is genuinely "received but unverified").
   const rag = metric.rag ? RAG_COLOR[metric.rag] : '#C9BEA9'
   const bg = metric.status === 'tbc' ? TBC_BG : undefined
   return (
@@ -236,7 +237,9 @@ function FinancePLTable({ lines, period }: { lines: FinancePLLine[]; period: Fin
                     const isTbc = l.status === 'tbc'
                     const isTotal = TOTAL_ROW_KEYS.has(l.key)
                     const isBold = BOLD_TOTAL_KEYS.has(l.key)
+                    const valueForPeriod = l.value ? l.value[period] : null
                     const budgetForPeriod = l.budget ? l.budget[period] : null
+                    const varianceForPeriod = l.variance ? l.variance[period] : null
                     return (
                       <TableRow
                         key={l.key}
@@ -256,13 +259,13 @@ function FinancePLTable({ lines, period }: { lines: FinancePLLine[]; period: Fin
                           {l.label}
                         </TableCell>
                         <TableCell align="right" sx={{ fontSize: '0.75rem', fontFamily: '"JetBrains Mono", monospace', color: isNdl ? '#8A7D70' : undefined }}>
-                          {fmtMoney(l.value)}
+                          {fmtMoney(valueForPeriod)}
                         </TableCell>
                         <TableCell align="right" sx={{ fontSize: '0.75rem', fontFamily: '"JetBrains Mono", monospace' }}>
                           {fmtMoney(budgetForPeriod)}
                         </TableCell>
                         <TableCell align="right" sx={{ fontSize: '0.75rem', fontFamily: '"JetBrains Mono", monospace', color: isNdl ? '#8A7D70' : undefined }}>
-                          {fmtMoney(l.variance)}
+                          {fmtMoney(varianceForPeriod)}
                         </TableCell>
                         <TableCell align="center">
                           <StatusBadge status={l.status} />
@@ -288,37 +291,43 @@ function ActualNotAvailableNote() {
   )
 }
 
-// Waterfall bridge step — 'total' bars run from 0 (a checkpoint: Net Revenue/Contribution/
-// EBITDA/NOP), 'up'/'down' bars run from the running cumulative to the next one (a cost/driver
-// line item), matching the standard bridge-chart convention. Built from plLines' Actual `value`
-// (only meaningful once status is 'ok' — callers must gate on that before rendering this).
+// Waterfall bridge step — exact 6-bar spec from the source SKILL.md §17 (Budget NP → Revenue Var
+// → Managed Cost Var → Imposed Cost Var → HO Cost Var → Actual NP). Bars 1 and 6 are 'total'
+// (anchored at 0, solid — bar 6 is deliberately NOT required to land where bar 5's bridge ends;
+// the gap, if any, is the real D&A/Finance Cost/other-non-EBITDA variance the 4-bar bridge
+// doesn't cover — an honest simplification per spec, not an arithmetic error). Bars 2-5 are
+// floating bridges colored green/red by favorable/unfavorable direction.
+//
+// Each bridge value is exactly that line's `variance[period]` (value-minus-budget) already
+// computed in sandRiverFinance.json — for a cost line stored negative (managedCosts/imposedCosts/
+// hoCosts), value-minus-budget already equals "budget magnitude minus actual magnitude" (both
+// negative, so the signs cancel algebraically), so no separate magnitude math is needed here.
 interface WaterfallStep { label: string; range: [number, number]; kind: 'total' | 'up' | 'down' }
 
-function buildWaterfallSteps(lines: FinancePLLine[]): WaterfallStep[] {
-  const v = (key: string) => lines.find((l) => l.key === key)?.value ?? 0
-  const netRevenue = v('netRevenue')
-  const managedCosts = v('managedCosts')
-  const imposedCosts = v('imposedCosts')
-  const contribution = v('contribution')
-  const hoCosts = v('hoCosts')
-  const ebitda = v('ebitda')
-  const da = v('da')
-  const financeCost = v('financeCost')
-  const nop = v('nop')
+function buildWaterfallSteps(lines: FinancePLLine[], period: FinancePeriod): WaterfallStep[] {
+  const line = (key: string) => lines.find((l) => l.key === key)
+  const nop = line('nop')
+  const budgetNP = nop?.budget?.[period] ?? 0
+  const actualNP = nop?.value?.[period] ?? 0
+  const revenueVar = line('netRevenue')?.variance?.[period] ?? 0
+  const managedVar = line('managedCosts')?.variance?.[period] ?? 0
+  const imposedVar = line('imposedCosts')?.variance?.[period] ?? 0
+  const hoVar = line('hoCosts')?.variance?.[period] ?? 0
 
-  const bridge = (label: string, from: number, delta: number): WaterfallStep =>
-    ({ label, range: [from, from + delta], kind: delta >= 0 ? 'up' : 'down' })
+  let cum = budgetNP
+  const bridge = (label: string, delta: number): WaterfallStep => {
+    const from = cum
+    cum += delta
+    return { label, range: [from, cum], kind: delta >= 0 ? 'up' : 'down' }
+  }
 
   return [
-    { label: 'Net Revenue', range: [0, netRevenue], kind: 'total' },
-    bridge('Managed Costs', netRevenue, managedCosts),
-    bridge('Imposed Costs', netRevenue + managedCosts, imposedCosts),
-    { label: 'Contribution', range: [0, contribution], kind: 'total' },
-    bridge('HO Costs', contribution, hoCosts),
-    { label: 'EBITDA', range: [0, ebitda], kind: 'total' },
-    bridge('D&A', ebitda, da),
-    bridge('Finance Cost', ebitda + da, financeCost),
-    { label: 'NOP', range: [0, nop], kind: 'total' },
+    { label: 'Budget NP', range: [0, budgetNP], kind: 'total' },
+    bridge('Revenue Var', revenueVar),
+    bridge('Managed Cost Var', managedVar),
+    bridge('Imposed Cost Var', imposedVar),
+    bridge('HO Cost Var', hoVar),
+    { label: 'Actual NP', range: [0, actualNP], kind: 'total' },
   ]
 }
 
@@ -399,7 +408,7 @@ export default function FinanceView() {
     ],
   }
 
-  const waterfallSteps = netProfitWaterfallStatus === 'ok' ? buildWaterfallSteps(data.plLines) : []
+  const waterfallSteps = netProfitWaterfallStatus === 'ok' ? buildWaterfallSteps(data.plLines, period) : []
   const waterfallData = {
     labels: waterfallSteps.map((s) => s.label),
     datasets: [{
