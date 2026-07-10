@@ -13,22 +13,41 @@ import TableBody from '@mui/material/TableBody'
 import TableCell from '@mui/material/TableCell'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
+import {
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip,
+} from 'chart.js'
+import { Line, Bar } from 'react-chartjs-2'
 import EmptyState from '@/components/EmptyState'
 import FinanceNarrativePanel from '@/components/FinanceNarrativePanel'
 import {
   getSandRiverFinance, PERIOD_LABELS,
-  type FinancePeriod, type FinanceMetric, type FinancePLLine, type PLSection,
+  type FinancePeriod, type FinanceMetric, type FinancePLLine, type PLSection, type ChartStatus,
 } from '@/lib/sandRiverFinance'
-import { RAG_DEEP_RED } from '@/lib/designTokens'
+import { RAG_DEEP_RED, CHART_COLORS } from '@/lib/designTokens'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip)
 
 // Finance (Sand River, 2026-07-16) — standalone tab, entirely independent of the shared
 // /api/dashboard payload (see page.tsx's renderContent — this is checked before the
-// loading/error/data gates for exactly that reason). All figures are currently NDL (No Data
-// Loaded) — real Sand River MIS figures are blocked on the "actuals showing as zero" sheet
-// issue; this page is built structure-first per the user's explicit "no invented numbers, use
-// the NDL treatment" instruction, ready for src/data/sandRiverFinance.json to be replaced with
-// real figures once that's resolved. RECON (ResRequest vs MIS comparison), the AI Query Box, and
-// any MotherDuck/DuckDB queries are explicitly out of scope — never build them here.
+// loading/error/data gates for exactly that reason).
+//
+// DATA STATUS (confirmed 2026-07-16 against the real SRM_Financial_Data.xlsx): Actual and Last
+// Year figures are broken sheet-wide (a "No Selection" month-selector cell), so they stay NDL
+// today. Budget IS real and fully populated — shown as the reference figure on KPI cards.
+//
+// Chart rendering below is driven ENTIRELY by data.charts.{cumulativeRevenuePace,monthlyCostStack,
+// netProfitWaterfall} (a ChartStatus each — 'ndl' | 'budget-only' | 'ok'), not by today's data
+// happening to be all-NDL — so once the upstream sheet issue is fixed and getSandRiverFinance()
+// starts returning 'ok' + real monthlyActual/plLines values, these charts upgrade to the real
+// two-series/waterfall view with no further code change:
+//   - 'ndl': neither Actual nor Budget known for that chart → EmptyState.
+//   - 'budget-only': Budget known, Actual not → single Budget-only series (today's real state).
+//   - 'ok': both known → real Actual series alongside the Budget reference.
+// The Net Profit Waterfall is inherently a variance chart (every bar is an Actual-minus-Budget
+// delta) — 'budget-only' can't produce a meaningful bridge either, so it renders as EmptyState
+// alongside 'ndl'; only 'ok' draws the real waterfall (built from plLines' Actual values).
+// RECON (ResRequest vs MIS comparison), the AI Query Box, and any MotherDuck/DuckDB queries are
+// explicitly out of scope — never build them here.
 
 const KPI_LABELS: { key: 'netRevenue' | 'contributionToHO' | 'ebitda' | 'netProfit'; label: string }[] = [
   { key: 'netRevenue', label: 'Net Revenue' },
@@ -49,6 +68,20 @@ const NDL_BORDER = '#C9BEA9'
 const TBC_BG = '#FFFBF0'
 const TBC_BORDER = '#EFC97A'
 
+// $ formatter that keeps the sign visible on cost/deduction rows (sheet stores those as
+// negative) rather than silently dropping it — a P&L line reading "$161,235" for a cost row
+// would misreadable as income.
+function fmtMoney(v: number | null): string {
+  if (v === null) return '—'
+  const sign = v < 0 ? '-' : ''
+  return `${sign}$${Math.abs(Math.round(v)).toLocaleString()}`
+}
+
+function fmtMoneyK(v: number): string {
+  const sign = v < 0 ? '-' : ''
+  return `${sign}$${Math.round(Math.abs(v) / 1000)}K`
+}
+
 function StatusBadge({ status }: { status: 'ok' | 'tbc' | 'ndl' }) {
   if (status === 'ndl') {
     return <Chip label="NDL" size="small" sx={{ height: 16, fontSize: '0.5625rem', bgcolor: '#E8E2D8', color: '#8A7D70', border: '0.5px solid', borderColor: NDL_BORDER }} />
@@ -61,6 +94,8 @@ function StatusBadge({ status }: { status: 'ok' | 'tbc' | 'ndl' }) {
 
 function FinanceKpiCard({ label, metric }: { label: string; metric: FinanceMetric }) {
   if (metric.status === 'ndl') {
+    // Actual is NDL, but Budget may still be known (confirmed real data) — show it as the
+    // reference figure rather than blanket-hiding everything, per explicit user confirmation.
     return (
       <Card sx={{ bgcolor: NDL_BG, borderLeft: '2.5px solid', borderLeftColor: NDL_BORDER, borderRadius: 1.5, height: '100%' }}>
         <CardContent>
@@ -74,14 +109,20 @@ function FinanceKpiCard({ label, metric }: { label: string; metric: FinanceMetri
             —
           </Typography>
           <Typography sx={{ fontSize: '0.625rem', color: 'text.secondary', mt: 0.5 }}>
-            No data loaded
+            No actual data loaded
           </Typography>
+          {metric.budget !== null && (
+            <Typography sx={{ fontSize: '0.6875rem', color: 'text.primary', mt: 0.25, fontFamily: '"JetBrains Mono", monospace' }}>
+              Budget {fmtMoney(metric.budget)}
+            </Typography>
+          )}
         </CardContent>
       </Card>
     )
   }
 
-  // 'ok' / 'tbc' — not reachable with today's all-NDL dataset, kept ready for real data.
+  // 'ok' / 'tbc' — not reachable with today's Actual-still-broken dataset, kept ready for when
+  // the upstream "No Selection" sheet issue is fixed.
   const rag = metric.rag ? RAG_COLOR[metric.rag] : '#C9BEA9'
   const bg = metric.status === 'tbc' ? TBC_BG : undefined
   return (
@@ -95,11 +136,11 @@ function FinanceKpiCard({ label, metric }: { label: string; metric: FinanceMetri
           {metric.status === 'tbc' && <StatusBadge status="tbc" />}
         </Box>
         <Typography sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 600, fontSize: 23, fontStyle: metric.status === 'tbc' ? 'italic' : 'normal' }}>
-          {metric.value !== null ? metric.value : '—'}
+          {fmtMoney(metric.value)}
         </Typography>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
           <Typography sx={{ fontSize: '0.625rem', color: 'text.secondary' }}>
-            {metric.budget !== null ? `Budget ${metric.budget}` : ''}
+            {metric.budget !== null ? `Budget ${fmtMoney(metric.budget)}` : ''}
           </Typography>
           <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.625rem', color: rag }}>
             {metric.variancePct !== null ? `${metric.variancePct > 0 ? '▲' : '▼'} ${metric.variancePct}%` : ''}
@@ -120,7 +161,7 @@ const SECTION_TITLES: Record<PLSection, string> = {
 const TOTAL_ROW_KEYS = new Set(['netRevenue', 'contribution', 'ebitda', 'nop'])
 const BOLD_TOTAL_KEYS = new Set(['nop'])
 
-function FinancePLTable({ lines }: { lines: FinancePLLine[] }) {
+function FinancePLTable({ lines, period }: { lines: FinancePLLine[]; period: FinancePeriod }) {
   const [mode, setMode] = useState<'summary' | 'detail'>('summary')
   const visible = lines.filter((l) => mode === 'detail' || !l.detailOnly)
   const sections: PLSection[] = ['revenue', 'costs', 'summary', 'drivers']
@@ -154,11 +195,11 @@ function FinancePLTable({ lines }: { lines: FinancePLLine[] }) {
         </Box>
 
         {/* Legend banner (SKILL.md §7) — NDL/TBC key. No active TBC items today (every row is
-            NDL), so only the legend renders, not a TBC item list. */}
+            NDL on the Actual side), so only the legend renders, not a TBC item list. */}
         <Box sx={{ display: 'flex', gap: 2, mb: 1.5, p: 1, bgcolor: 'background.default', borderRadius: 1, border: '0.5px solid', borderColor: 'divider' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
             <StatusBadge status="ndl" />
-            <Typography sx={{ fontSize: '0.6875rem', color: 'text.secondary' }}>No Data Loaded — figures not yet received</Typography>
+            <Typography sx={{ fontSize: '0.6875rem', color: 'text.secondary' }}>No Data Loaded — Actual not yet received; Budget shown where known</Typography>
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
             <StatusBadge status="tbc" />
@@ -195,6 +236,7 @@ function FinancePLTable({ lines }: { lines: FinancePLLine[] }) {
                     const isTbc = l.status === 'tbc'
                     const isTotal = TOTAL_ROW_KEYS.has(l.key)
                     const isBold = BOLD_TOTAL_KEYS.has(l.key)
+                    const budgetForPeriod = l.budget ? l.budget[period] : null
                     return (
                       <TableRow
                         key={l.key}
@@ -214,13 +256,13 @@ function FinancePLTable({ lines }: { lines: FinancePLLine[] }) {
                           {l.label}
                         </TableCell>
                         <TableCell align="right" sx={{ fontSize: '0.75rem', fontFamily: '"JetBrains Mono", monospace', color: isNdl ? '#8A7D70' : undefined }}>
-                          {isNdl ? '—' : l.value}
+                          {fmtMoney(l.value)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontSize: '0.75rem', fontFamily: '"JetBrains Mono", monospace' }}>
+                          {fmtMoney(budgetForPeriod)}
                         </TableCell>
                         <TableCell align="right" sx={{ fontSize: '0.75rem', fontFamily: '"JetBrains Mono", monospace', color: isNdl ? '#8A7D70' : undefined }}>
-                          {isNdl ? '—' : l.budget}
-                        </TableCell>
-                        <TableCell align="right" sx={{ fontSize: '0.75rem', fontFamily: '"JetBrains Mono", monospace', color: isNdl ? '#8A7D70' : undefined }}>
-                          {isNdl ? '—' : l.variance}
+                          {fmtMoney(l.variance)}
                         </TableCell>
                         <TableCell align="center">
                           <StatusBadge status={l.status} />
@@ -238,10 +280,175 @@ function FinancePLTable({ lines }: { lines: FinancePLLine[] }) {
   )
 }
 
+function ActualNotAvailableNote() {
+  return (
+    <Typography sx={{ fontSize: '0.625rem', color: 'text.secondary', mt: 0.5, fontStyle: 'italic' }}>
+      Actual not available — Budget shown only
+    </Typography>
+  )
+}
+
+// Waterfall bridge step — 'total' bars run from 0 (a checkpoint: Net Revenue/Contribution/
+// EBITDA/NOP), 'up'/'down' bars run from the running cumulative to the next one (a cost/driver
+// line item), matching the standard bridge-chart convention. Built from plLines' Actual `value`
+// (only meaningful once status is 'ok' — callers must gate on that before rendering this).
+interface WaterfallStep { label: string; range: [number, number]; kind: 'total' | 'up' | 'down' }
+
+function buildWaterfallSteps(lines: FinancePLLine[]): WaterfallStep[] {
+  const v = (key: string) => lines.find((l) => l.key === key)?.value ?? 0
+  const netRevenue = v('netRevenue')
+  const managedCosts = v('managedCosts')
+  const imposedCosts = v('imposedCosts')
+  const contribution = v('contribution')
+  const hoCosts = v('hoCosts')
+  const ebitda = v('ebitda')
+  const da = v('da')
+  const financeCost = v('financeCost')
+  const nop = v('nop')
+
+  const bridge = (label: string, from: number, delta: number): WaterfallStep =>
+    ({ label, range: [from, from + delta], kind: delta >= 0 ? 'up' : 'down' })
+
+  return [
+    { label: 'Net Revenue', range: [0, netRevenue], kind: 'total' },
+    bridge('Managed Costs', netRevenue, managedCosts),
+    bridge('Imposed Costs', netRevenue + managedCosts, imposedCosts),
+    { label: 'Contribution', range: [0, contribution], kind: 'total' },
+    bridge('HO Costs', contribution, hoCosts),
+    { label: 'EBITDA', range: [0, ebitda], kind: 'total' },
+    bridge('D&A', ebitda, da),
+    bridge('Finance Cost', ebitda + da, financeCost),
+    { label: 'NOP', range: [0, nop], kind: 'total' },
+  ]
+}
+
 export default function FinanceView() {
   const [period, setPeriod] = useState<FinancePeriod>('y')
   const data = getSandRiverFinance()
   const kpis = data.kpis[period]
+  const mb = data.monthlyBudget
+  const ma = data.monthlyActual
+  const revenuePaceStatus: ChartStatus = data.charts.cumulativeRevenuePace
+  const monthlyCostStackStatus: ChartStatus = data.charts.monthlyCostStack
+  const netProfitWaterfallStatus: ChartStatus = data.charts.netProfitWaterfall
+
+  // 'ok' requires monthlyActual to actually be populated — falls back to the budget-only series
+  // if the two ever disagree (status flipped ahead of the data, or vice versa) rather than
+  // rendering a broken chart.
+  const revenuePaceData = {
+    labels: mb.months,
+    datasets: [
+      ...(revenuePaceStatus === 'ok' && ma
+        ? [{
+          label: 'Actual',
+          data: ma.revenue,
+          borderColor: CHART_COLORS.trend,
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 0,
+        }]
+        : []),
+      {
+        label: 'Budget',
+        data: mb.revenue,
+        borderColor: CHART_COLORS.comparison,
+        backgroundColor: 'transparent',
+        borderDash: [4, 3],
+        borderWidth: 1.5,
+        tension: 0.3,
+        pointRadius: 0,
+      },
+    ],
+  }
+
+  // 'ok': the stack becomes real Actual costs (the newsworthy content once available), Budget
+  // demotes to a dashed revenue reference line alongside the solid Actual revenue line — same
+  // "Actual solid / Budget dashed" convention as revenuePaceData above.
+  const costStackOk = monthlyCostStackStatus === 'ok' && ma
+  const costStackData = {
+    labels: mb.months,
+    datasets: [
+      { label: 'Managed Costs', data: costStackOk ? ma.managedCosts : mb.managedCosts, backgroundColor: CHART_COLORS.categoryRotation[1], stack: 'costs' },
+      { label: 'Imposed Costs', data: costStackOk ? ma.imposedCosts : mb.imposedCosts, backgroundColor: CHART_COLORS.negative, stack: 'costs' },
+      {
+        label: costStackOk ? 'Revenue (Actual)' : 'Revenue (Budget)',
+        data: costStackOk ? ma.revenue : mb.revenue,
+        type: 'line' as const,
+        borderColor: CHART_COLORS.trend,
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        tension: 0.3,
+        pointRadius: 0,
+        yAxisID: 'y',
+      },
+      ...(costStackOk
+        ? [{
+          label: 'Revenue (Budget)',
+          data: mb.revenue,
+          type: 'line' as const,
+          borderColor: CHART_COLORS.comparison,
+          backgroundColor: 'transparent',
+          borderDash: [4, 3],
+          borderWidth: 1.5,
+          tension: 0.3,
+          pointRadius: 0,
+          yAxisID: 'y',
+        }]
+        : []),
+    ],
+  }
+
+  const waterfallSteps = netProfitWaterfallStatus === 'ok' ? buildWaterfallSteps(data.plLines) : []
+  const waterfallData = {
+    labels: waterfallSteps.map((s) => s.label),
+    datasets: [{
+      data: waterfallSteps.map((s) => s.range),
+      backgroundColor: waterfallSteps.map((s) => (
+        s.kind === 'total' ? CHART_COLORS.budgetGold : s.kind === 'up' ? CHART_COLORS.positive : CHART_COLORS.negative
+      )),
+      borderRadius: 2,
+    }],
+  }
+  const waterfallOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (ctx: { raw: unknown }) => {
+            const [start, end] = ctx.raw as [number, number]
+            return fmtMoneyK(end - start)
+          },
+        },
+      },
+    },
+    scales: {
+      y: { ticks: { callback: (v: string | number) => fmtMoneyK(Number(v)), font: { size: 9 } } },
+      x: { ticks: { font: { size: 8 } } },
+    },
+  }
+
+  const lineOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx: { raw: unknown }) => fmtMoneyK(Number(ctx.raw)) } } },
+    scales: {
+      y: { ticks: { callback: (v: string | number) => fmtMoneyK(Number(v)), font: { size: 9 } } },
+      x: { ticks: { font: { size: 9 } } },
+    },
+  }
+
+  const barOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx: { raw: unknown }) => fmtMoneyK(Number(ctx.raw)) } } },
+    scales: {
+      y: { stacked: true, ticks: { callback: (v: string | number) => fmtMoneyK(Number(v)), font: { size: 9 } } },
+      x: { stacked: true, ticks: { font: { size: 9 } } },
+    },
+  }
 
   return (
     <Box>
@@ -267,8 +474,8 @@ export default function FinanceView() {
         </Box>
       </Box>
 
-      {/* Period toggle — deliberately local state, NOT the Topbar's shared filters.period (which
-          is hidden entirely for this tab, per Topbar.tsx's HIDE_FILTERS_FOR_SUBS). */}
+      {/* Period toggle — deliberately local state, NOT the Topbar's shared filters.period (the
+          whole global filter cluster is hidden for this view — see Topbar.tsx). */}
       <ToggleButtonGroup
         value={period}
         exclusive
@@ -313,20 +520,41 @@ export default function FinanceView() {
         <Grid size={4}>
           <Card>
             <CardContent>
-              <Typography variant="overline" sx={{ display: 'block', mb: 1, color: 'text.secondary' }}>
+              <Typography variant="overline" sx={{ display: 'block', color: 'text.secondary' }}>
                 Cumulative Revenue Pace
               </Typography>
-              <EmptyState message="No data loaded — Actual vs Budget pace will appear here." height={130} />
+              {revenuePaceStatus === 'ndl' ? (
+                <EmptyState message="No data loaded — neither Actual nor Budget figures are available for this chart yet." height={130} />
+              ) : (
+                <>
+                  {revenuePaceStatus === 'budget-only' && <ActualNotAvailableNote />}
+                  <Box sx={{ height: 130, mt: 1 }}>
+                    <Line data={revenuePaceData} options={lineOpts} />
+                  </Box>
+                </>
+              )}
             </CardContent>
           </Card>
         </Grid>
         <Grid size={4}>
           <Card>
             <CardContent>
-              <Typography variant="overline" sx={{ display: 'block', mb: 1, color: 'text.secondary' }}>
+              <Typography variant="overline" sx={{ display: 'block', color: 'text.secondary' }}>
                 Monthly Cost Stack vs Revenue
               </Typography>
-              <EmptyState message="No data loaded — Managed/Imposed cost stack will appear here." height={130} />
+              {monthlyCostStackStatus === 'ndl' ? (
+                <EmptyState message="No data loaded — neither Actual nor Budget figures are available for this chart yet." height={130} />
+              ) : (
+                <>
+                  {monthlyCostStackStatus === 'budget-only' && <ActualNotAvailableNote />}
+                  <Box sx={{ height: 130, mt: 1 }}>
+                    {/* Mixed bar+line dataset — react-chartjs-2's ChartData<'bar'> type doesn't model
+                        a per-dataset type override, though Chart.js itself handles it fine at
+                        runtime (same technique as a bar-chart-with-line-overlay anywhere else). */}
+                    <Bar data={costStackData as never} options={barOpts} />
+                  </Box>
+                </>
+              )}
             </CardContent>
           </Card>
         </Grid>
@@ -336,14 +564,20 @@ export default function FinanceView() {
               <Typography variant="overline" sx={{ display: 'block', mb: 1, color: 'text.secondary' }}>
                 Net Profit Waterfall
               </Typography>
-              <EmptyState message="No data loaded — Budget-to-Actual NP bridge will appear here." height={130} />
+              {netProfitWaterfallStatus === 'ok' ? (
+                <Box sx={{ height: 130, mt: 1 }}>
+                  <Bar data={waterfallData} options={waterfallOpts} />
+                </Box>
+              ) : (
+                <EmptyState message="No data loaded — this is an Actual-vs-Budget bridge chart, so it needs real Actual figures to mean anything." height={130} />
+              )}
             </CardContent>
           </Card>
         </Grid>
       </Grid>
 
       {/* P&L table */}
-      <FinancePLTable lines={data.plLines} />
+      <FinancePLTable lines={data.plLines} period={period} />
     </Box>
   )
 }

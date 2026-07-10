@@ -12,7 +12,15 @@ import {
   EXCLUDED_RESERVATION_PREFIX,
   KES_USD_RATE,
   BOOKING_STATUS,
+  PROPERTY_ROOM_COUNTS,
 } from '@/lib/constants'
+
+// Property (2026-07-16, "no exceptions" property-filter pass) — same known-good propertyId set
+// as dashboard/route.ts's VALID_PROPERTY_IDS, so an invalid/stale value from the client can't
+// reach a query. Daily was the last view left unfiltered — see project memory.
+const VALID_PROPERTY_IDS = new Set(
+  Object.values(PROPERTY_ROOM_COUNTS).map((p) => p.propertyId).filter((id): id is string => id !== null)
+)
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const n = (v: unknown, def = 0): number => {
@@ -35,6 +43,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const requestedWindow = i(req.nextUrl.searchParams.get('window'), 3)
     const windowDays = ALLOWED_WINDOWS.includes(requestedWindow) ? requestedWindow : 3
     const consultantId = req.nextUrl.searchParams.get('consultant') || ''
+    const requestedProperty = req.nextUrl.searchParams.get('property') || ''
+    const property = requestedProperty !== 'all' && VALID_PROPERTY_IDS.has(requestedProperty) ? requestedProperty : ''
 
     // Build exclusion arrays once — mysql2 expands array params into IN(?,?,...) automatically
     const NON_REV_IDS = Array.from(NON_REVENUE_RATE_TYPE_IDS)
@@ -59,6 +69,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const CONSULTANT_SQL = consultantId ? 'AND r.consultant = ?' : ''
     const consultantParam = consultantId ? [consultantId] : []
 
+    // Property filter — scopes the whole tab the same way. All 6 queries below either already
+    // join `itineraries i` or get one added here (provisionalsExpiringRow) specifically so this
+    // one fragment applies uniformly — see that query's own comment for why adding the join
+    // there is safe (COUNT(DISTINCT r.reservation_number) is immune to itinerary-leg fan-out).
+    const PROPERTY_SQL = property ? 'AND i.property = ?' : ''
+    const propertyParam = property ? [property] : []
+
     const [
       arrivals3dRow,
       provisionalsExpiringRow,
@@ -77,22 +94,27 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status = ?
           AND i.date_in BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
           ${AGENT_EXCLUSION_SQL}
-          ${CONSULTANT_SQL}`,
-        [CONFIRMED_STATUS, ...agentExclusionParams, ...consultantParam]
+          ${CONSULTANT_SQL}
+          ${PROPERTY_SQL}`,
+        [CONFIRMED_STATUS, ...agentExclusionParams, ...consultantParam, ...propertyParam]
       ),
 
       // KPI 2 — Provisionals expiring this week (fixed 7-day window; provision_expiry_date
-      // confirmed as the real field — 0 NULLs across current status=20 rows). No itinerary
-      // join needed: provision_expiry_date lives on reservations, one row per reservation.
+      // confirmed as the real field — 0 NULLs across current status=20 rows). Originally had no
+      // itinerary join (provision_expiry_date lives on reservations) — one added here (2026-07-16,
+      // "no exceptions" property-filter pass) solely to reach i.property; COUNT(DISTINCT
+      // r.reservation_number) is immune to the resulting per-leg fan-out, so no dedup needed.
       queryOne<{ cnt: number }>(
         `SELECT COUNT(DISTINCT r.reservation_number) AS cnt
         FROM reservations r
+        JOIN itineraries i ON r.reservation_number = i.reservation_number
         JOIN agents a ON r.agent_id = a.agent_id
         WHERE r.status = ?
           AND r.provision_expiry_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
           ${AGENT_EXCLUSION_SQL}
-          ${CONSULTANT_SQL}`,
-        [PROVISIONAL_STATUS, ...agentExclusionParams, ...consultantParam]
+          ${CONSULTANT_SQL}
+          ${PROPERTY_SQL}`,
+        [PROVISIONAL_STATUS, ...agentExclusionParams, ...consultantParam, ...propertyParam]
       ),
 
       // KPI 3 — Cash outstanding: booking-value proxy for confirmed arrivals within the
@@ -112,8 +134,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             AND i.date_in BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)
             ${AGENT_EXCLUSION_SQL}
             ${CONSULTANT_SQL}
+            ${PROPERTY_SQL}
         ) deduped`,
-        [KES_RATE, CONFIRMED_STATUS, windowDays, ...agentExclusionParams, ...consultantParam]
+        [KES_RATE, CONFIRMED_STATUS, windowDays, ...agentExclusionParams, ...consultantParam, ...propertyParam]
       ),
 
       // Section 2 — Confirmed Arrivals table. Rolled up to one row per reservation_number +
@@ -145,9 +168,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND i.date_in BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)
           ${AGENT_EXCLUSION_SQL}
           ${CONSULTANT_SQL}
+          ${PROPERTY_SQL}
         GROUP BY r.reservation_number, r.reservation_name, r.status, a.agent_name, a.agent_id, i.property, p.name
         ORDER BY arrival_date ASC`,
-        [KES_RATE, CONFIRMED_STATUS, windowDays, ...agentExclusionParams, ...consultantParam]
+        [KES_RATE, CONFIRMED_STATUS, windowDays, ...agentExclusionParams, ...consultantParam, ...propertyParam]
       ),
 
       // Section 3 — Expiring Provisionals. One row per reservation (the hold expiring is a
@@ -179,11 +203,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             AND r.provision_expiry_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
             ${AGENT_EXCLUSION_SQL}
             ${CONSULTANT_SQL}
+            ${PROPERTY_SQL}
         ) legs
         WHERE rn_leg = 1
         ORDER BY arrival_date ASC
         LIMIT 20`,
-        [KES_RATE, PROVISIONAL_STATUS, ...agentExclusionParams, ...consultantParam]
+        [KES_RATE, PROVISIONAL_STATUS, ...agentExclusionParams, ...consultantParam, ...propertyParam]
       ),
 
       // Section 4 — Cash Outstanding table. Same shape/scope as Section 2 PRE-fix (still
@@ -212,8 +237,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND i.date_in BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)
           ${AGENT_EXCLUSION_SQL}
           ${CONSULTANT_SQL}
+          ${PROPERTY_SQL}
         ORDER BY i.date_in ASC`,
-        [KES_RATE, CONFIRMED_STATUS, windowDays, ...agentExclusionParams, ...consultantParam]
+        [KES_RATE, CONFIRMED_STATUS, windowDays, ...agentExclusionParams, ...consultantParam, ...propertyParam]
       ),
 
       // Consultant filter options — named consultants only (consultant_first_name/last_name

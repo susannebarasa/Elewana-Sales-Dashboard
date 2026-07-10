@@ -146,6 +146,28 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const propertyEscaped = property.replace(/'/g, "''")
     const AND_P = property !== 'all' ? ` AND i.property = '${propertyEscaped}'` : ''
     const AND_P2 = property !== 'all' ? ` AND i2.property = '${propertyEscaped}'` : ''
+    // Different-shape variant (2026-07-16, "no exceptions" property-filter pass) — for the 3
+    // queries that filter via `reservation_number IN (SELECT DISTINCT ... FROM itineraries WHERE
+    // ...)` with no alias on itineraries at all (ytdRow, kpiPipeline, kpiPipelineStly), so AND_P's
+    // `i.property` reference doesn't apply — this is the same fragment against the bare column.
+    const AND_P_BARE = property !== 'all' ? ` AND property = '${propertyEscaped}'` : ''
+    // Semi-join variant (2026-07-16, "no exceptions" pass, risky-query batch) — for queries that
+    // aggregate directly over `reservations` with NO itinerary join at all (pdRows, chRows,
+    // cdRows' counts subquery, kpiConsult/kpiConsultLy, kpiCancel/kpiCancelLy,
+    // kpiForecastCancelLyFullYear, bookingCancelledByMonth, bookingNewConfirmedByMonth). A plain
+    // JOIN to itineraries here would fan out every COUNT(*)/SUM() by leg count (the exact
+    // commit-806c539 bug) — but `IN (SELECT DISTINCT ...)` is a semi-join, which by SQL
+    // definition tests set membership and can never duplicate outer rows, no matter how many
+    // itinerary legs a reservation has. Safe without any dedup restructuring.
+    // `reservation_number` is left unqualified since none of the 10 call sites join another
+    // table that also has that column (rate_types/agents don't) — MySQL resolves it unambiguously.
+    const AND_P_RESV = property !== 'all' ? ` AND reservation_number IN (SELECT DISTINCT reservation_number FROM itineraries WHERE property = '${propertyEscaped}')` : ''
+    // Shared display name for the selected property (2026-07-16) — used anywhere a label/caption
+    // needs to say which property is filtered, instead of each call site re-deriving its own
+    // lookup. Object.entries(PROPERTY_ROOM_COUNTS) is keyed by display name, so this reverses it.
+    const selectedPropertyName = property !== 'all'
+      ? Object.entries(PROPERTY_ROOM_COUNTS).find(([, cap]) => cap.propertyId === property)?.[0] ?? null
+      : null
 
     // Build exclusion arrays once — mysql2 expands array params into IN(?,?,...) automatically
     const NON_REV_IDS = Array.from(NON_REVENUE_RATE_TYPE_IDS)
@@ -170,7 +192,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status IN ('20','30') AND (${dateInTwoYearsThroughMonth('r.date_created', cy, ly, cm)})
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?
+          AND r.reservation_number NOT LIKE ?${AND_P_RESV}
         GROUP BY MONTH(r.date_created), LEFT(MONTHNAME(r.date_created),3) ORDER BY m`,
         [KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -258,7 +280,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status = '30' AND (${dateInTwoYearsThroughMonth('i.date_in', cy, ly, cm)})
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?
+          AND r.reservation_number NOT LIKE ?${AND_P}
         GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3) ORDER BY m`,
         [KES_RATE, KES_RATE, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -277,7 +299,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         JOIN reservations r ON i.reservation_number = r.reservation_number
         JOIN extras e ON e.reservation_number = i.reservation_number AND e.internal_property = i.property
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status='30' AND (${dateInTwoYearsThroughMonth('i.date_in', cy, ly, cm)})
+        WHERE r.status='30' AND (${dateInTwoYearsThroughMonth('i.date_in', cy, ly, cm)})${AND_P}
         GROUP BY MONTH(i.date_in)`,
         [KES_RATE, KES_RATE]
       ),
@@ -572,7 +594,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
         WHERE r.status IN ('20','30') AND (${dateInTwoYearsThroughMonth('i.date_in', cy, ly, cm)})
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?
+          AND r.reservation_number NOT LIKE ?${AND_P}
         GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3) ORDER BY m`,
         [NON_REV_IDS, RES_PREFIX]
       ),
@@ -597,7 +619,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           WHERE r.status = '30' AND ${dateInYearThroughMonth('i.date_in', cy, cm)}
             AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
           GROUP BY MONTH(i.date_in), LEFT(MONTHNAME(i.date_in),3)
         ) nt
         JOIN (
@@ -610,7 +632,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           WHERE r.status = '30' AND ${dateInYearThroughMonth('i.date_in', cy, cm)}
             AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
           GROUP BY MONTH(i.date_in)
         ) rev ON nt.m = rev.m
         ORDER BY nt.m`,
@@ -634,7 +656,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         FROM reservations WHERE status IN ('20','30') AND ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)}
           AND rate_type NOT IN (?)
           AND reservation_number NOT LIKE ?
-          AND total_amount > 0
+          AND total_amount > 0${AND_P_RESV}
         GROUP BY rate_type ORDER BY cnt DESC LIMIT 5`,
         [NON_REV_IDS, RES_PREFIX]
       ),
@@ -664,7 +686,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE r.status IN ('20','30') AND i.date_in > CURDATE()
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
         ) deduped`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -681,7 +703,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND r.reservation_number NOT LIKE ?
           AND r.reservation_number IN (
             SELECT DISTINCT reservation_number FROM itineraries
-            WHERE date_in < CURDATE() AND ${dateInFullYear('date_in', cy)}
+            WHERE date_in < CURDATE() AND ${dateInFullYear('date_in', cy)}${AND_P_BARE}
           )`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -701,7 +723,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND r.reservation_number NOT LIKE ?
           AND a.agent_id NOT IN (?)
           AND a.agent_name NOT IN (?)
-          AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
+          AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_P}
         ORDER BY i.date_in LIMIT 6`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX, EX_AGENT_IDS, EX_AGENT_NAMES, AGENT_NAME_LIKE]
       ),
@@ -738,11 +760,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             COUNT(CASE WHEN r.total_amount > 0 THEN 1 END)*100.0/(
               SELECT COUNT(*) FROM reservations
               WHERE status IN ('20','30') AND ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)}
-                AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0
+                AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0${AND_P_RESV}
             ) AS cv
           FROM reservations r
           WHERE r.status IN ('20','30') AND r.consultant IS NOT NULL AND r.consultant!=''
-            AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)} AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
+            AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)} AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_P_RESV}
           GROUP BY r.consultant
           ORDER BY bk DESC LIMIT 10
         ) counts
@@ -754,7 +776,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE r.status='30' AND r.consultant IS NOT NULL AND r.consultant!=''
             AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
-            AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
+            AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_P}
           GROUP BY r.consultant
         ) rev ON counts.code = rev.code
         ORDER BY counts.bk DESC`,
@@ -847,7 +869,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?`,
+          AND r.reservation_number NOT LIKE ?${AND_P}`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -870,7 +892,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status = '30' AND ${dateInFullYear('i.date_in', cy)} AND i.date_out > i.date_in
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?`,
+          AND r.reservation_number NOT LIKE ?${AND_P}`,
         [KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -925,7 +947,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status='20' AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
           AND r.reservation_number IN (
-            SELECT DISTINCT reservation_number FROM itineraries WHERE date_in > CURDATE()
+            SELECT DISTINCT reservation_number FROM itineraries WHERE date_in > CURDATE()${AND_P_BARE}
           )`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -939,7 +961,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status IN ('20','30') AND r.date_created IS NOT NULL
           AND i.date_in > r.date_created AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?`,
+          AND r.reservation_number NOT LIKE ?${AND_P}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1076,7 +1098,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         `SELECT COUNT(DISTINCT consultant) AS n_consult, COUNT(*) AS total_bkgs
         FROM reservations
         WHERE status IN ('20','30') AND consultant IS NOT NULL AND consultant!=''
-          AND ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0`,
+          AND ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0${AND_P_RESV}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1087,7 +1109,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)}
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
-          AND r.total_amount > 0`,
+          AND r.total_amount > 0${AND_P}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1215,7 +1237,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
         ) nights
         CROSS JOIN (
           SELECT ${ROOM_REVENUE_SUM_SQL} AS rev_raw, ${EXTRAS_SUM_SQL} AS extras_raw
@@ -1224,7 +1246,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
           WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
             AND r.rate_type NOT IN (?)
-            AND r.reservation_number NOT LIKE ?
+            AND r.reservation_number NOT LIKE ?${AND_P}
         ) rev
         CROSS JOIN (
           SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table_revenue,
@@ -1233,7 +1255,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
-          WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', ly, monthLo, monthHi)} AND i2.date_in <= CURDATE()
+          WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', ly, monthLo, monthHi)} AND i2.date_in <= CURDATE()${AND_P2}
         ) dayuse`,
         [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
       ),
@@ -1246,7 +1268,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status IN ('20','30') AND r.date_created IS NOT NULL
           AND i.date_in > r.date_created AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)}
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?`,
+          AND r.reservation_number NOT LIKE ?${AND_P}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1256,7 +1278,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         `SELECT COUNT(DISTINCT consultant) AS n_consult, COUNT(*) AS total_bkgs
         FROM reservations
         WHERE status IN ('20','30') AND consultant IS NOT NULL AND consultant!=''
-          AND ${dateInYearMonthRange('date_created', ly, monthLo, monthHi)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0`,
+          AND ${dateInYearMonthRange('date_created', ly, monthLo, monthHi)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ? AND total_amount > 0${AND_P_RESV}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1275,7 +1297,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status = '30' AND r.consultant IS NOT NULL AND r.consultant!=''
-          AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)} AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
+          AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)} AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_P}
         GROUP BY r.consultant`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -1296,7 +1318,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status='30' AND i.date_in > CURDATE() AND i.date_in <= DATE_ADD(CURDATE(), INTERVAL 1 YEAR)
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
-          AND r.total_amount > 0`,
+          AND r.total_amount > 0${AND_P}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1308,7 +1330,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status='30' AND i.date_in > DATE_SUB(CURDATE(), INTERVAL 1 YEAR) AND i.date_in <= CURDATE()
           AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
-          AND r.total_amount > 0`,
+          AND r.total_amount > 0${AND_P}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1323,7 +1345,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         WHERE r.status='20' AND r.rate_type NOT IN (?)
           AND r.reservation_number NOT LIKE ?
           AND r.reservation_number IN (
-            SELECT DISTINCT reservation_number FROM itineraries WHERE date_in > DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+            SELECT DISTINCT reservation_number FROM itineraries WHERE date_in > DATE_SUB(CURDATE(), INTERVAL 1 YEAR)${AND_P_BARE}
           )`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -1342,7 +1364,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         FROM reservations
         WHERE ${dateInYearMonthRange('date_created', cy, monthLo, monthHi)}
           AND rate_type NOT IN (?)
-          AND reservation_number NOT LIKE ?`,
+          AND reservation_number NOT LIKE ?${AND_P_RESV}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1355,7 +1377,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         FROM reservations
         WHERE ${dateInYearMonthRange('date_created', ly, monthLo, monthHi)}
           AND rate_type NOT IN (?)
-          AND reservation_number NOT LIKE ?`,
+          AND reservation_number NOT LIKE ?${AND_P_RESV}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1377,7 +1399,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND i.date_in >= DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01')
           AND i.date_in <  DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 4 MONTH), '%Y-%m-01')
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?
+          AND r.reservation_number NOT LIKE ?${AND_P}
         GROUP BY YEAR(i.date_in), MONTH(i.date_in)`,
         [NON_REV_IDS, RES_PREFIX]
       ),
@@ -1405,7 +1427,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           AND i.date_in >= DATE_SUB(DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01'), INTERVAL 1 YEAR)
           AND i.date_in <  DATE_SUB(DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 4 MONTH), '%Y-%m-01'), INTERVAL 1 YEAR)
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?
+          AND r.reservation_number NOT LIKE ?${AND_P}
         GROUP BY YEAR(i.date_in), MONTH(i.date_in)`,
         [NON_REV_IDS, RES_PREFIX]
       ),
@@ -1424,7 +1446,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
                      AND r.date_created <= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
                 THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS last_year_forward_nights_same_leadtime
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status='30' AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?`,
+        WHERE r.status='30' AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_P}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1446,7 +1468,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           COUNT(CASE WHEN status='90' AND confirmation_date IS NOT NULL THEN 1 END) AS cancelled_ct,
           COUNT(CASE WHEN confirmation_date IS NOT NULL THEN 1 END) AS total_ct
         FROM reservations
-        WHERE ${dateInFullYear('date_created', ly)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ?`,
+        WHERE ${dateInFullYear('date_created', ly)} AND rate_type NOT IN (?) AND reservation_number NOT LIKE ?${AND_P_RESV}`,
         [NON_REV_IDS, RES_PREFIX]
       ),
 
@@ -1704,7 +1726,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status='90' AND r.confirmation_date IS NOT NULL
           AND ${dateInYearMonthRange('r.last_change_date', cy, monthLo, monthHi)}
-          AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_A}
+          AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_A}${AND_P_RESV}
         GROUP BY MONTH(r.last_change_date)
         ORDER BY m`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
@@ -1724,7 +1746,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
         WHERE r.status='30' AND r.total_amount > 0
           AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
-          AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_A}
+          AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${AND_A}${AND_P_RESV}
         GROUP BY MONTH(r.date_created)
         ORDER BY m`,
         [KES_RATE, NON_REV_IDS, RES_PREFIX]
@@ -1805,7 +1827,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
                 AND r.agent_id NOT IN (?)
                 AND a.agent_name NOT IN (?)
                 AND r.rate_type NOT IN (?)
-                AND r.reservation_number NOT LIKE ?${AND_SEG}
+                AND r.reservation_number NOT LIKE ?${AND_SEG}${AND_P}
             ) rv
             CROSS JOIN (
               SELECT
@@ -1817,7 +1839,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
                 AND r.agent_id NOT IN (?)
                 AND a.agent_name NOT IN (?)
                 AND r.rate_type NOT IN (?)
-                AND r.reservation_number NOT LIKE ?${AND_SEG}
+                AND r.reservation_number NOT LIKE ?${AND_SEG}${AND_P}
             ) nt
             CROSS JOIN (
               SELECT COUNT(DISTINCT r.agent_id) AS active_agents
@@ -1829,7 +1851,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
                 AND a.agent_name NOT IN (?)
                 AND r.rate_type NOT IN (?)
                 AND r.reservation_number NOT LIKE ?
-                AND r.total_amount > 0${AND_SEG}
+                AND r.total_amount > 0${AND_SEG}${AND_P}
             ) ag`,
             [
           KES_RATE,
@@ -2171,6 +2193,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // for Occupancy) — same-basis comparison against arevM per the Trade Partners fix this session.
     const totalRevFullYearM = n(kpiTotalRevFullYear?.rev_raw) / 1e6
     const arevPct = totalRevFullYearM > 0 ? Math.round((arevM / totalRevFullYearM) * 100) : 0
+    // Property (decision #3, "no exceptions"): kpiTotalRevFullYear (the denominator) is now
+    // AND_P-filtered alongside kpiAgentRev (the numerator, already filtered) — see that query's
+    // comment. Label made explicit so "% of total" doesn't silently misread as portfolio-wide once
+    // both sides share one property's basis.
+    const arevPctLabel = selectedPropertyName
+      ? `${arevPct}% of ${selectedPropertyName}'s total`
+      : `${arevPct}% of total`
 
     // STLY (same-time-last-year) basis for the forward-looking, CURDATE()-relative cards
     // (Confirmed Bookings, Pipeline's 4 cards) — these have no year to swap for a standard
@@ -2216,8 +2245,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // to label it "BUDGET" instead of "STLY"/YoY.
     const mtdActualRevM = n(kpiBudgetActual?.mtd_rev) / 1e6
     const ytdActualRevM = n(kpiBudgetActual?.ytd_rev) / 1e6
-    const mtdBudget = getPortfolioBudget(cy, realCurrentMonth, realCurrentMonth)
-    const ytdBudget = getPortfolioBudget(cy, 1, realCurrentMonth)
+    // Property (decision #3, "no exceptions"): once kpiBudgetActual's actual side is
+    // property-filtered (AND_P above), the budget side must narrow to the same property too, or
+    // the comparison silently becomes "this property's actual vs the whole portfolio's budget."
+    const mtdBudget = property !== 'all' ? getPropertyBudget(property, cy, realCurrentMonth, realCurrentMonth) : getPortfolioBudget(cy, realCurrentMonth, realCurrentMonth)
+    const ytdBudget = property !== 'all' ? getPropertyBudget(property, cy, 1, realCurrentMonth) : getPortfolioBudget(cy, 1, realCurrentMonth)
     const mtdBudgetRevM = mtdBudget.rev / 1e6
     const ytdBudgetRevM = ytdBudget.rev / 1e6
 
@@ -2245,8 +2277,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       portfolioAvailableSum += cap.roomnightsAvailable
       portfolioSoldSum += revparNightsMap.get(cap.propertyId) ?? 0
     }
-    const portfolioRevpar = portfolioAvailableSum > 0 ? portfolioRevenueSum / portfolioAvailableSum : 0
-    const portfolioOccPct = portfolioAvailableSum > 0 ? (portfolioSoldSum / portfolioAvailableSum) * 100 : 0
+    // Property (2026-07-16, "no exceptions" pass): genuinely recompute scoped to the selected
+    // property rather than relabeling the portfolio-wide sum — reuses actualByPropMap/
+    // revparNightsMap, the exact same per-property maps Property Performance's RevPAR table
+    // already draws from, so this can't disagree with that table's own numbers for the property.
+    const selectedCap = property !== 'all'
+      ? Object.values(PROPERTY_ROOM_COUNTS).find((cap) => cap.propertyId === property)
+      : undefined
+    const revenueSum = selectedCap ? (actualByPropMap.get(property) ?? 0) : portfolioRevenueSum
+    const availableSum = selectedCap ? selectedCap.roomnightsAvailable : portfolioAvailableSum
+    const soldSum = selectedCap ? (revparNightsMap.get(property) ?? 0) : portfolioSoldSum
+    const portfolioRevpar = availableSum > 0 ? revenueSum / availableSum : 0
+    const portfolioOccPct = availableSum > 0 ? (soldSum / availableSum) * 100 : 0
+    const revparOccCaption = selectedPropertyName ?? 'portfolio-wide, 15 properties'
 
     const KP_BASE = {
       pace: {
@@ -2284,12 +2327,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         // No `ly` — no prior-year property-level capacity query exists yet, so no YoY badge
         // rather than a fabricated one. Thresholds are first-pass placeholders, not yet
         // calibrated against a full year of this exact aggregate.
-        revpar: kpi(portfolioRevpar, '$', 'RevPAR', 'portfolio-wide, 15 properties', 400, 300),
-        occPct: kpi(portfolioOccPct, 'pct', 'Occupancy %', 'portfolio-wide, 15 properties', 55, 45),
+        revpar: kpi(portfolioRevpar, '$', 'RevPAR', revparOccCaption, 400, 300),
+        occPct: kpi(portfolioOccPct, 'pct', 'Occupancy %', revparOccCaption, 55, 45),
       },
       agents: {
         active: kpi(activeAgents, 'int', 'Active Trade Partners', 'this period', 700, 500, undefined, activeAgentsLy),
-        arev: kpi(arevM, '$M', 'Agent Room Revenue', `${arevPct}% of total`, 30, 20, undefined, arevMLy),
+        arev: kpi(arevM, '$M', 'Agent Room Revenue', arevPctLabel, 30, 20, undefined, arevMLy),
         // New (2026-07-08b, Room Revenue / Extras split, Tier 2): sibling to Agent Room Revenue,
         // same reasoning as occ.extras in Tier 1. Thresholds are placeholder round numbers.
         extras: kpi(agentExtrasM, '$M', 'Agent Extras Revenue', 'F&B, activities, transfers etc.', 4, 2.5, undefined, agentExtrasMLy),
@@ -2371,7 +2414,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       const forecastNights = confirmedNights + provisionalComponent + adjustedPickup - expectedCancellations
 
-      const monthBudget = getPortfolioBudget(year, month, month)
+      const monthBudget = property !== 'all' ? getPropertyBudget(property, year, month, month) : getPortfolioBudget(year, month, month)
       const monthLabel = new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'short' }) + ' ' + year
 
       return {

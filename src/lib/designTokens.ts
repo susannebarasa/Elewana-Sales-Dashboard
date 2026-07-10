@@ -38,3 +38,15 @@ export const FINANCE_DARK = {
   body: '#A89880',
   eyebrow: '#D4A855',
 } as const
+
+// Property-filter spotlight (2026-07-16, "no exceptions" pass) — for any "by property" bar chart
+// that must keep showing every property (a ranking/comparison view) while still visibly
+// respecting the Topbar's selected property: the selected bar goes solid + gets a dark border,
+// everything else dims. Shared here (not per-component) since Property Performance and Sales
+// Executive Summary's "Bookings by Property" chart both use the exact same treatment — a future
+// third chart should reuse this rather than reinvent its own version.
+export const PROPERTY_HIGHLIGHT = {
+  bar: '#B7632A',
+  dim: 'rgba(183,99,42,0.28)',
+  border: '#1F1A14',
+} as const

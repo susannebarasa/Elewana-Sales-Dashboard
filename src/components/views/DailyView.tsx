@@ -25,7 +25,13 @@ import { KpiCardSkeletonRow, TableSkeletonBlock } from '@/components/DashboardSk
 
 const WINDOWS = [3, 7, 14, 21] as const
 
+// Property (2026-07-16, "no exceptions" property-filter pass) — Daily was the last view left
+// unfiltered. Only `property` is used here; the other Topbar filters (year/period/channel/
+// market) don't apply to Daily's own T-minus-window model.
+interface Filters { property: string }
+
 type Props = {
+  filters: Filters
   onSelectAgent: (agentId: string) => void
   onSelectProperty: (context: EntityClickContext) => void
 }
@@ -42,7 +48,7 @@ const propertyCellSx = (clickable: boolean) => ({
   '&:hover': clickable ? { textDecoration: 'underline' } : undefined,
 } as const)
 
-export default function DailyView({ onSelectAgent, onSelectProperty }: Props) {
+export default function DailyView({ filters, onSelectAgent, onSelectProperty }: Props) {
   const [window_, setWindow] = useState<number>(3)
   const [consultant, setConsultant] = useState<string>('')
   const [data, setData] = useState<DailyData | null>(null)
@@ -54,6 +60,7 @@ export default function DailyView({ onSelectAgent, onSelectProperty }: Props) {
     setError(null)
     const params = new URLSearchParams({ window: String(window_) })
     if (consultant) params.set('consultant', consultant)
+    if (filters.property && filters.property !== 'all') params.set('property', filters.property)
     fetch(`/api/daily?${params.toString()}`)
       .then((r) => {
         if (!r.ok) return r.json().then((e) => Promise.reject(e.error ?? 'Server error'))
@@ -61,7 +68,7 @@ export default function DailyView({ onSelectAgent, onSelectProperty }: Props) {
       })
       .then((d: DailyData) => { setData(d); setLoading(false) })
       .catch((e) => { setError(String(e)); setLoading(false) })
-  }, [window_, consultant])
+  }, [window_, consultant, filters.property])
 
   if (loading && !data) {
     return (

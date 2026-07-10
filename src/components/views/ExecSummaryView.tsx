@@ -13,11 +13,12 @@ import type { DashboardData, EntityClickContext } from '@/types'
 import KpiRow, { fmtK, budgetVariance } from '@/components/KpiRow'
 import ExecutiveStoryPanel from '@/components/ExecutiveStoryPanel'
 import { propertyBarClickOptions } from '@/lib/chartClicks'
+import { PROPERTY_HIGHLIGHT } from '@/lib/designTokens'
 import type { KpiMetric } from '@/types'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip)
 
-interface Filters { period: 'm' | 'y' | 'a'; year: string; channel: string; market: string }
+interface Filters { period: 'm' | 'y' | 'a'; year: string; channel: string; market: string; property: string }
 type Props = { data: DashboardData; filters: Filters; onSelectProperty: (context: EntityClickContext) => void }
 
 const CHART_OPTS = {
@@ -103,11 +104,17 @@ export default function ExecSummaryView({ data, filters, onSelectProperty }: Pro
     ],
   }
 
+  // Property (2026-07-16, "no exceptions" pass) — same spotlight treatment as Property
+  // Performance: the selected property's bar goes solid + bordered, the rest dim, rather than
+  // filtering the ranking down to one bar (which would defeat this chart's comparative purpose).
+  const selectedPropertyId = filters.property !== 'all' ? filters.property : null
   const propChartData = {
     labels: data.OD.props.map((p) => p.nm),
     datasets: [{
       data: data.OD.props.map((p) => p.oc),
-      backgroundColor: 'rgba(183,99,42,0.7)',
+      backgroundColor: data.OD.props.map((p) => (selectedPropertyId && p.id === selectedPropertyId ? PROPERTY_HIGHLIGHT.bar : selectedPropertyId ? PROPERTY_HIGHLIGHT.dim : 'rgba(183,99,42,0.7)')),
+      borderColor: data.OD.props.map((p) => (selectedPropertyId && p.id === selectedPropertyId ? PROPERTY_HIGHLIGHT.border : 'transparent')),
+      borderWidth: data.OD.props.map((p) => (selectedPropertyId && p.id === selectedPropertyId ? 1.5 : 0)),
       borderRadius: 3,
     }],
   }
@@ -132,7 +139,7 @@ export default function ExecSummaryView({ data, filters, onSelectProperty }: Pro
       <KpiRow metrics={[roomRevenueActualized, kp.occ.nights, kp.occ.occPct, kp.execPace.vsBudget]} />
 
       {/* Narrative panel (2026-07-16) — moved below the KPI row: cards first, narrative second. */}
-      <ExecutiveStoryPanel data={data} />
+      <ExecutiveStoryPanel data={data} property={filters.property} />
 
       <Grid container spacing={1.5} sx={{ mb: 1.5 }}>
         <Grid size={4}>
@@ -203,6 +210,7 @@ export default function ExecSummaryView({ data, filters, onSelectProperty }: Pro
               <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Bookings by Property</Typography>
               <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
                 Relative occupancy — last 90 days
+                {selectedPropertyId && ' · selected property highlighted, full ranking still shown'}
               </Typography>
               <Box sx={{ height: 180, position: 'relative' }}>
                 <Bar

@@ -21,13 +21,25 @@ import type { DashboardData, EntityClickContext } from '@/types'
 import { propertyBarClickOptions } from '@/lib/chartClicks'
 import { KpiCardShell } from '@/components/KpiRow'
 import EmptyState from '@/components/EmptyState'
+import { PROPERTY_HIGHLIGHT } from '@/lib/designTokens'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 
 type Props = {
   data: DashboardData
+  filters: { property: string }
   onSelectProperty: (context: EntityClickContext) => void
 }
+
+// Highlight colors (2026-07-16, "no exceptions" property-filter pass) — the Properties filter
+// now visibly applies here too, but as a spotlight on the selected row/bar rather than filtering
+// the table/charts down to one row, which would break their whole comparative purpose (see
+// project memory on this reversal). Kept visually distinct from the existing over/under-budget
+// RAG colors so the two meanings (severity vs "this is the one you picked") don't collide.
+// Shared with Sales Executive Summary's "Bookings by Property" chart — see PROPERTY_HIGHLIGHT.
+const HIGHLIGHT_BAR = PROPERTY_HIGHLIGHT.bar
+const DIM_BAR = PROPERTY_HIGHLIGHT.dim
+const HIGHLIGHT_BORDER = PROPERTY_HIGHLIGHT.border
 
 const fmtDollar = (v: number | null): string =>
   v === null ? '—' : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}k` : `$${Math.round(v).toLocaleString()}`
@@ -54,8 +66,9 @@ const CHART_OPTS = {
 // instruction — no second, separate panel). Sorted by Room Revenue descending — a ranking table,
 // so the biggest performers surface first; caveat properties (LEPC/NXR/LSC) sort naturally low
 // given their $0/near-$0 figures, still shown as rows with their caveat flagged, never hidden.
-export default function PropertyPerformanceView({ data, onSelectProperty }: Props) {
+export default function PropertyPerformanceView({ data, filters, onSelectProperty }: Props) {
   const rows = [...data.PROPERTY_PERFORMANCE].sort((a, b) => (b.roomRevenue ?? -1) - (a.roomRevenue ?? -1))
+  const selectedPropertyId = filters.property !== 'all' ? filters.property : null
 
   // 4-card summary (2026-07-09) — totalRoomRevenue sums this page's own rows (same full-year-2026
   // basis as the chart/table below); avgOccPct reuses KP_BASE.occ.occPct, the already-correct
@@ -64,13 +77,18 @@ export default function PropertyPerformanceView({ data, onSelectProperty }: Prop
   const totalRoomRevenue = rows.reduce((s, r) => s + (r.roomRevenue ?? 0), 0)
   const overBudgetCount = rows.filter((r) => r.budgetVariancePct !== null && r.budgetVariancePct >= 100).length
   const underBudgetCount = rows.filter((r) => r.budgetVariancePct !== null && r.budgetVariancePct < 100).length
+  const selectedRow = selectedPropertyId ? rows.find((r) => r.propertyId === selectedPropertyId) : undefined
 
   // Revenue chart — same rows/order as the table below, so the two never disagree on ranking.
+  // Selected property (if any) is spotlighted (solid color) while the rest dim, rather than being
+  // filtered out — keeps the full comparative ranking intact per the "no exceptions" reversal.
   const revenueChartData = {
     labels: rows.map((r) => r.propertyName),
     datasets: [{
       data: rows.map((r) => r.roomRevenue ?? 0),
-      backgroundColor: 'rgba(183,99,42,0.7)',
+      backgroundColor: rows.map((r) => (selectedPropertyId && r.propertyId === selectedPropertyId ? HIGHLIGHT_BAR : selectedPropertyId ? DIM_BAR : 'rgba(183,99,42,0.7)')),
+      borderColor: rows.map((r) => (selectedPropertyId && r.propertyId === selectedPropertyId ? HIGHLIGHT_BORDER : 'transparent')),
+      borderWidth: rows.map((r) => (selectedPropertyId && r.propertyId === selectedPropertyId ? 1.5 : 0)),
       borderRadius: 3,
     }],
   }
@@ -83,11 +101,16 @@ export default function PropertyPerformanceView({ data, onSelectProperty }: Prop
   // budget.ts's own caveat — excluded here rather than shown as a misleading 0%; the table below
   // still lists them with "no budget" spelled out, nothing is hidden, just not charted).
   const varianceRows = rows.filter((r) => r.budgetVariancePct !== null)
+  // Same spotlight idea as the revenue chart, but the over/under RAG color is the primary signal
+  // here — so the selected property keeps its real color and gets a dark border instead of being
+  // recolored, rather than a highlight color that would clash with or override that verdict.
   const varianceChartData = {
     labels: varianceRows.map((r) => r.propertyName),
     datasets: [{
       data: varianceRows.map((r) => r.budgetVariancePct as number),
       backgroundColor: varianceRows.map((r) => ((r.budgetVariancePct as number) >= 100 ? VARIANCE_OVER : VARIANCE_UNDER)),
+      borderColor: varianceRows.map((r) => (selectedPropertyId && r.propertyId === selectedPropertyId ? HIGHLIGHT_BORDER : 'transparent')),
+      borderWidth: varianceRows.map((r) => (selectedPropertyId && r.propertyId === selectedPropertyId ? 1.5 : 0)),
       borderRadius: 3,
     }],
   }
@@ -117,6 +140,15 @@ export default function PropertyPerformanceView({ data, onSelectProperty }: Prop
           accent="red"
         />
       </Grid>
+
+      {/* Properties filter reversal (2026-07-16) — this view still shows every property (its
+          whole purpose is cross-property comparison), but the Topbar's selected property is now
+          spotlighted below rather than silently ignored. */}
+      {selectedPropertyId && (
+        <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 600 }}>
+          Highlighting {selectedRow?.propertyName ?? selectedPropertyId} (Topbar Properties filter) — table and charts still show every property for comparison.
+        </Typography>
+      )}
 
       {rows.length === 0 ? (
         <EmptyState message="No properties match this filter selection." />
@@ -173,12 +205,21 @@ export default function PropertyPerformanceView({ data, onSelectProperty }: Prop
               <TableBody>
                 {rows.map((r) => {
                   const over = r.budgetVariancePct !== null && r.budgetVariancePct >= 100
+                  const isSelected = selectedPropertyId !== null && r.propertyId === selectedPropertyId
                   return (
-                    <TableRow key={r.propertyName} sx={{ '&:last-child td': { border: 0 } }}>
+                    <TableRow
+                      key={r.propertyName}
+                      sx={{
+                        '&:last-child td': { border: 0 },
+                        bgcolor: isSelected ? 'primary.light' : undefined,
+                        borderLeft: isSelected ? '3px solid' : undefined,
+                        borderLeftColor: isSelected ? 'primary.main' : undefined,
+                      }}
+                    >
                       <TableCell
                         onClick={() => r.propertyId && onSelectProperty({ type: 'property', id: r.propertyId, sourceView: 'property-performance' })}
                         sx={{
-                          fontFamily: 'Inter, sans-serif', fontWeight: 500,
+                          fontFamily: 'Inter, sans-serif', fontWeight: isSelected ? 700 : 500,
                           color: r.propertyId ? 'primary.main' : 'text.secondary',
                           maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                           cursor: r.propertyId ? 'pointer' : 'default',

@@ -121,6 +121,13 @@ export default function Page() {
   }, [dashboardView, filters.year, filters.period, filters.channel, filters.market, filters.property])
 
   const renderContent = () => {
+    // Finance (2026-07-16, moved to top-level nav per explicit instruction — was briefly a Sales
+    // sub-tab, now lives at its own Sidebar entry alongside Sales/Marketing/Ops/GEX/MIS) — checked
+    // before the `view !== 'sales'` catch-all below since it's a real built page, not a stub.
+    if (view === 'finance') {
+      return <FinanceView />
+    }
+
     if (view !== 'sales') {
       return (
         <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200, color: 'text.secondary', fontSize: 13 }}>
@@ -129,16 +136,11 @@ export default function Page() {
       )
     }
 
-    // Finance and Daily are both standalone — Finance never touches /api/dashboard at all (see
-    // FinanceView), and Daily uses its own /api/daily fetch (dashboardView is null for both, per
-    // the useEffect above, so `data` never populates for either). Both must be checked before the
-    // loading/error/data gates below, or a slow dashboard cold-load would block a tab that has
-    // nothing to do with that fetch.
-    if (sub === 'finance') {
-      return <FinanceView />
-    }
+    // Daily is standalone — it uses its own /api/daily fetch (dashboardView is null for it, per
+    // the useEffect above, so `data` never populates). Must be checked before the loading/error/
+    // data gates below, or a slow dashboard cold-load would block a tab unrelated to that fetch.
     if (sub === 'daily') {
-      return <DailyView onSelectAgent={setSelectedAgentId} onSelectProperty={setEntityClick} />
+      return <DailyView filters={filters} onSelectAgent={setSelectedAgentId} onSelectProperty={setEntityClick} />
     }
 
     if (loading) {
@@ -154,7 +156,7 @@ export default function Page() {
     // fields; unused sections are empty defaults from the server.
     switch (sub) {
       case 'exec-summary':               return <ExecSummaryView data={data} filters={filters} onSelectProperty={setEntityClick} />
-      case 'property-performance':       return <PropertyPerformanceView data={data} onSelectProperty={setEntityClick} />
+      case 'property-performance':       return <PropertyPerformanceView data={data} filters={filters} onSelectProperty={setEntityClick} />
       case 'market-segment-performance': return <MarketSegmentPerformanceView data={data} filters={filters} onSelectSegment={setEntityClick} />
       case 'booking-status-movement':    return <BookingStatusMovementView data={data} filters={filters} />
       case 'tp':   return <AgentsView data={data} filters={filters} onSelectAgentPerformance={setSelectedPerformanceAgentId} onSelectProperty={setEntityClick} />

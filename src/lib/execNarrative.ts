@@ -39,10 +39,25 @@ function sentence1(data: DashboardData): string {
   return `Room Revenue YTD is ${fmtM(actual)} against a ${fmtM(budget)} budget (${pct.toFixed(1)}% of budget), ${paceDescriptor(pct)}.`
 }
 
-// Sentence 2 (HEDGED) — RevPAR, top 2 + softest. Caveated properties (pre-opening, mid-
-// refurbishment) are excluded from the ranking entirely — a construction gap or closure isn't a
-// performance signal, and calling out "softest" on one would be misleading, not just imprecise.
-function sentence2(data: DashboardData): string {
+// Sentence 2 (HEDGED) — RevPAR, top 2 + softest when portfolio-wide. When a single property is
+// selected (2026-07-16, "no exceptions" property-filter pass), the top-2/softest COMPARATIVE
+// framing is structurally meaningless — you can't rank one thing against itself — so this
+// branches to a direct single-property statement instead, sourced from PROPERTY_PERFORMANCE
+// (same full-year-2026 basis as REVPAR.byProperty, already carries budgetVariancePct which
+// REVPAR.byProperty does not, so no separate query needed).
+function sentence2(data: DashboardData, property: string): string {
+  if (property !== 'all') {
+    const row = data.PROPERTY_PERFORMANCE.find((r) => r.propertyId === property)
+    if (!row || row.revpar === null) {
+      return 'RevPAR for this property isn’t available this period — no completed stays to compute it from yet.'
+    }
+    const budgetClause = row.budgetVariancePct !== null
+      ? `, at ${row.budgetVariancePct.toFixed(1)}% of budget`
+      : ' (no budget set for this property)'
+    const caveatClause = row.caveat ? ` — ${row.caveat}` : ''
+    return `${row.propertyName}'s RevPAR is ${fmtWhole(row.revpar)}${budgetClause}${caveatClause}.`
+  }
+
   const clean = data.REVPAR.byProperty.filter((r) => r.revpar !== null && r.caveat === null)
   const sorted = [...clean].sort((a, b) => (b.revpar as number) - (a.revpar as number))
   if (sorted.length < 3) {
@@ -85,6 +100,6 @@ function sentence3(data: DashboardData): string {
   return `Agent Pace-wise, ${paceClause} — worth a follow-up review; the forward forecast for ${monthRange} is tracking at ${fc.v.toFixed(1)}% of budget, and ${cancelClause}, both based on methodology finalized today and not yet independently reviewed.`
 }
 
-export function buildExecutiveNarrative(data: DashboardData): string[] {
-  return [sentence1(data), sentence2(data), sentence3(data)]
+export function buildExecutiveNarrative(data: DashboardData, property: string): string[] {
+  return [sentence1(data), sentence2(data, property), sentence3(data)]
 }

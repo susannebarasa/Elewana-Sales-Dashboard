@@ -61,15 +61,7 @@ const SUBS = [
   { id: 'pl', label: 'Pipeline' },
   { id: 'cn', label: 'Consultants' },
   { id: 'daily', label: 'Daily' },
-  { id: 'finance', label: 'Finance' },
 ]
-
-// Finance (2026-07-16) — single-property MIS data, entirely independent of the shared
-// /api/dashboard payload (no year/period/channel/market/property dimension at all — it has its
-// own internal MTD/YTD/Annualised toggle instead). Explicitly hiding the global filter cluster
-// here (per user decision) rather than leaving it visible-but-inert, same reasoning already
-// applied to Property Performance ignoring most of these, just made explicit instead of silent.
-const HIDE_FILTERS_FOR_SUBS = new Set(['finance'])
 
 const YEARS = ['2022', '2023', '2024', '2025', '2026', '2027', '2028']
 
@@ -164,7 +156,10 @@ export default function Topbar({ view, sub, onSub, filters, onFilters, lastUpdat
             {VIEW_TITLES[view] ?? view}
           </Typography>
 
-          {!HIDE_FILTERS_FOR_SUBS.has(sub) && (
+          {/* Filter cluster is Sales-only — Finance (now its own top-level view) has no
+              year/period/channel/market/property dimension at all (its own internal
+              MTD/YTD/Annualised toggle instead), and the other stub views don't need it either. */}
+          {view === 'sales' && (
             <>
               <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
 
