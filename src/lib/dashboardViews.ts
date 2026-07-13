@@ -12,6 +12,7 @@
 
 export const DASHBOARD_VIEWS = [
   'exec-summary',
+  'sales-exec-summary',
   'property-performance',
   'market-segment-performance',
   'booking-status-movement',
@@ -236,6 +237,43 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     'kpiConfirmedStly',
     'kpiPipelineStly',
   ],
+  // Sales Executive Summary standalone page (2026-07-16) — ADDITIVE, 'exec-summary' (KPI/
+  // narrative/pace) plus ONLY the 'tp' query IDs that actually feed AD.yearly (the agent
+  // leaderboard) and AD.byProp (the segment-scoped by-property chart) — the two AD fields
+  // SalesExecutiveSummaryDesign.tsx actually reads. Trimmed 2026-07-16 (load-time fix): the
+  // page was pulling the FULL 'tp' bundle (20 query IDs), including agMonthRows/
+  // dayUseAgentMonthRows/occMonthRows/adrRows/chRows (feed AD.byMonth/occByMonth/adr/ch —
+  // unused, no monthly agent-revenue or channel-mix chart on this page), kpiAgents/
+  // kpiAgentRev/kpiAgentsLy/kpiAgentRevLy/kpiTotalRevFullYear (feed KP_BASE.agents — this
+  // page never reads kp.agents, only kp.occ/kp.pace/kp.execPace), and lowSeasonByAgentRows
+  // (feeds LOW_SEASON_AGENTS — not rendered here). Per the DB-contention finding (cold-load
+  // is DB-side, not connection-pool-bound — see project_performance_investigation memory),
+  // fewer concurrent queries directly helps every cold hit, not just cache-warm ones.
+  'sales-exec-summary': [
+    'pdRows',
+    'ocPropRows',
+    'kpiConfirmed',
+    'kpiRevNights',
+    'kpiRevNightsLy',
+    'kpiLyBkgs',
+    'kpiBudgetActual',
+    'budgetActualByPropRows',
+    'revparNightsRows',
+    'kpiForecastTargetRows',
+    'kpiForecastStlyRows',
+    'kpiForecastPace',
+    'kpiForecastCancelLyFullYear',
+    'agentPaceRows',
+    'cancelDriverNightsRows',
+    'cancelDriverRevRows',
+    'agRows',
+    'dayUseAgentRows',
+    'agLyRows',
+    'agPropRows',
+    'dayUsePropRows',
+    'agentPropCountRows',
+    'agentConversionRows',
+  ],
   cn: ['cdRows', 'cdLyRows', 'kpiConsult', 'kpiConsultLy', 'kpiAgentRev', 'kpiAgentRevLy'],
   'property-performance': [
     'budgetActualByPropRows',
@@ -274,6 +312,9 @@ export const VIEW_DATA_KEYS: Record<Exclude<DashboardView, 'all'>, readonly stri
   pace: ['PD', 'PF', 'OD', 'KP_BASE', 'BUDGET', 'FORECAST', 'lastUpdated'],
   occ: ['OD', 'KP_BASE', 'REVPAR', 'lastUpdated'],
   tp: ['AD', 'KP_BASE', 'AGENT_PACE', 'CANCEL_DRIVERS', 'LOW_SEASON_AGENTS', 'lastUpdated'],
+  'sales-exec-summary': [
+    'PD', 'OD', 'KP_BASE', 'REVPAR', 'FORECAST', 'AGENT_PACE', 'CANCEL_DRIVERS', 'AD', 'LOW_SEASON_AGENTS', 'lastUpdated',
+  ],
   pl: ['PLF', 'YTD_ARR', 'PLT', 'KP_BASE', 'lastUpdated'],
   cn: ['CD', 'KP_BASE', 'lastUpdated'],
   'property-performance': ['PROPERTY_PERFORMANCE', 'KP_BASE', 'lastUpdated'],

@@ -51,30 +51,13 @@ export default function Sidebar({ open, view, onView }: Props) {
       }}
     >
       {/* Brand */}
-      <Box sx={{ px: 2, pt: 2.25, pb: 1.75, borderBottom: '0.5px solid', borderColor: 'divider' }}>
-        <Typography
-          sx={{
-            fontFamily: '"Cormorant Garamond", Georgia, serif',
-            fontSize: 26,
-            fontWeight: 500,
-            color: 'text.primary',
-            lineHeight: 1,
-          }}
-        >
-          Elewana
-        </Typography>
-        <Typography
-          sx={{
-            fontSize: '0.5rem',
-            fontWeight: 600,
-            letterSpacing: '0.22em',
-            textTransform: 'uppercase',
-            color: 'primary.main',
-            mt: 0.5,
-          }}
-        >
-          Collection
-        </Typography>
+      <Box sx={{ px: 2, pt: 2, pb: 1.75, borderBottom: '0.5px solid', borderColor: 'divider', bgcolor: 'background.paper' }}>
+        <Box
+          component="img"
+          src="/elewana-collection-logo.png"
+          alt="Elewana Collection"
+          sx={{ display: 'block', width: '100%', maxWidth: 160, height: 'auto' }}
+        />
       </Box>
 
       {/* Nav groups */}

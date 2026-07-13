@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import Box from '@mui/material/Box'
 import Alert from '@mui/material/Alert'
 import DashboardSkeleton from '@/components/DashboardSkeleton'
-import type { DashboardData, EntityClickContext } from '@/types'
+import type { AgentSearchResult, DashboardData, EntityClickContext } from '@/types'
 import Sidebar, { DRAWER_WIDTH } from '@/components/Sidebar'
 import Topbar from '@/components/Topbar'
 import DailyView from '@/components/views/DailyView'
@@ -53,6 +53,11 @@ export default function Page() {
   // View-scoped fetch cache (2026-07-09) — keyed by view|filters. Switching tabs reuses a
   // prior response for the same filter set instead of re-hitting the DB.
   const viewCacheRef = useRef<Map<string, DashboardData>>(new Map())
+  // Find Agent default suggestions (2026-07-10 fix) — deliberately NOT derived from `data.AD`.
+  // AD only exists once the Trade Partners view-scoped batch has fetched, but Find Agent lives in
+  // the Topbar on every view, so it needs its own fetch keyed only on filters, not on
+  // dashboardView/sub — see the effect below and src/app/api/agents/top/route.ts.
+  const [agentDefaultOptions, setAgentDefaultOptions] = useState<AgentSearchResult[]>([])
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   // Agent Performance drill-down (2026-07-14g) — deliberately SEPARATE from selectedAgentId.
   // Agent clicks from AgentsView (Trade Partners/Agent Performance) open this view-specific
@@ -119,6 +124,33 @@ export default function Page() {
       })
     return () => { cancelled = true }
   }, [dashboardView, filters.year, filters.period, filters.channel, filters.market, filters.property])
+
+  // Find Agent default suggestions — independent of dashboardView/sub (global Topbar feature,
+  // not scoped to Trade Partners) and independent of the loading/error state above (never blocks
+  // initial paint). A trimmed, single-join query (src/app/api/agents/top/route.ts) — not the full
+  // 3-way-joined agRows — so firing it on every load doesn't reintroduce the DB contention the
+  // view-scoped batching was built to avoid. Deliberately fired via setTimeout(…, 0), i.e. queued
+  // one tick after the main dashboard fetch above rather than in the same synchronous pass, so it
+  // never contends with that fetch for the same DB round-trip on a cold load.
+  useEffect(() => {
+    let cancelled = false
+    const params = new URLSearchParams({
+      year: filters.year,
+      period: filters.period,
+      channel: filters.channel,
+      market: filters.market,
+      property: filters.property,
+    })
+    const timer = setTimeout(() => {
+      fetch(`/api/agents/top?${params.toString()}`)
+        .then((r) => (r.ok ? r.json() : { results: [] }))
+        .then((d: { results: AgentSearchResult[] }) => {
+          if (!cancelled) setAgentDefaultOptions(d.results ?? [])
+        })
+        .catch(() => { /* Find Agent suggestions are non-critical — fail silently */ })
+    }, 0)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [filters.year, filters.period, filters.channel, filters.market, filters.property])
 
   const renderContent = () => {
     // Finance (2026-07-16, moved to top-level nav per explicit instruction — was briefly a Sales
@@ -197,7 +229,7 @@ export default function Page() {
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((o) => !o)}
           onSelectAgent={setSelectedAgentId}
-          agentDefaultOptions={data?.AD.yearly.map((a) => ({ id: a.id, name: a.nm })) ?? []}
+          agentDefaultOptions={agentDefaultOptions}
         />
         <Box sx={{ flex: 1, overflowY: 'auto', p: '18px 20px' }}>
           {renderContent()}

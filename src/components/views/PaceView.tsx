@@ -265,7 +265,7 @@ export default function PaceView({ data, filters, onSelectProperty }: Props) {
             <CardContent>
               <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Monthly Booking Pace</Typography>
               <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
-                {filters.year} vs LY confirmed bookings ($k)
+                {filters.year} vs LY — confirmed Room Revenue ($k)
               </Typography>
               <Box sx={{ height: 180, position: 'relative' }}>
                 <Line data={paceChartData} options={CHART_OPTS} />

@@ -51,6 +51,15 @@ export default function FindAgentSearch({ onSelectAgent, defaultOptions = [] }: 
       isOptionEqualToValue={(o, v) => o.id === v.id}
       noOptionsText={isSearching ? 'No agents found' : 'No data for this period'}
       sx={{ width: 220 }}
+      slotProps={{
+        listbox: {
+          sx: {
+            fontSize: '0.6875rem',
+            '& .MuiAutocomplete-option': { fontSize: '0.6875rem', minHeight: 'auto', py: 0.5 },
+            '& .MuiAutocomplete-groupLabel': { fontSize: '0.625rem', lineHeight: 2 },
+          },
+        },
+      }}
       renderInput={(params) => (
         <TextField
           {...params}

@@ -183,16 +183,28 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // View-scoped query execution (2026-07-09) — only run queries needed for `view`.
     // Cold path (exec-summary default) drops from ~67 to ~16 round-trips.
     const allQueries: Partial<Record<DashboardQueryId, () => Promise<unknown>>> = {
-      // PD — monthly booking intake YTD (reservations only — no itinerary join needed)
+      // PD — monthly booking pace (2026-07-16, verified-figures fix). Was status IN ('20','30')
+      // over raw r.total_amount (blended Room+Extras, includes Pipeline) despite being captioned
+      // "confirmed bookings" everywhere it's shown (ExecSummaryView, PaceView, and the new Sales
+      // Executive Summary page) — a real discrepancy, caught when asked "what do we have on
+      // Booking Pace, use only verified figures." Now status='30' only + Room-Revenue-only split
+      // (rate_components/ROOM_REVENUE_CASE), matching the app-wide "revenue = confirmed, Room
+      // Revenue only" convention every other figure follows. User confirmed fixing this everywhere
+      // (not just the new page) even though it changes numbers already shown on the existing Pace
+      // and Exec Summary tabs. Requires an itinerary+rate_components join now, so AND_P (i.property)
+      // replaces the old bare-reservation AND_P_RESV; the join is SUM-only (no COUNT/DISTINCT
+      // alongside it), so the itinerary-leg fan-out that join can cause doesn't double-count here.
       pdRows: () => query<{ m: number; mn: string; actual: number; ly_val: number }>(
         `SELECT MONTH(r.date_created) AS m, LEFT(MONTHNAME(r.date_created),3) AS mn,
-          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', cy, 1, cm)} THEN IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0) ELSE 0 END)/1000 AS actual,
-          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', ly, 1, cm)} THEN IFNULL(CASE WHEN dt.currency='KES' THEN r.total_amount/? ELSE r.total_amount END,0) ELSE 0 END)/1000 AS ly_val
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', cy, 1, cm)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS actual,
+          SUM(CASE WHEN ${caseInYearMonthRange('r.date_created', ly, 1, cm)} AND ${ROOM_REVENUE_CASE} THEN (CASE WHEN dt.currency='KES' THEN rc.amount_gross/? ELSE rc.amount_gross END) ELSE 0 END)/1000 AS ly_val
         FROM reservations r
+        JOIN itineraries i ON r.reservation_number = i.reservation_number
+        JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
         LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-        WHERE r.status IN ('20','30') AND (${dateInTwoYearsThroughMonth('r.date_created', cy, ly, cm)})
+        WHERE r.status = '30' AND (${dateInTwoYearsThroughMonth('r.date_created', cy, ly, cm)})
           AND r.rate_type NOT IN (?)
-          AND r.reservation_number NOT LIKE ?${AND_P_RESV}
+          AND r.reservation_number NOT LIKE ?${AND_P}
         GROUP BY MONTH(r.date_created), LEFT(MONTHNAME(r.date_created),3) ORDER BY m`,
         [KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
@@ -389,7 +401,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         JOIN agents a ON rv.agent_id=a.agent_id
         WHERE a.agent_name NOT IN (?)
           AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_A}
-        ORDER BY rv_raw DESC LIMIT 12`,
+        ORDER BY rv_raw DESC`,
         [
           KES_RATE,
           KES_RATE,
