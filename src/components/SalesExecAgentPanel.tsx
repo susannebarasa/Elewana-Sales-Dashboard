@@ -111,6 +111,16 @@ export default function SalesExecAgentPanel({ agentId, onClose }: Props) {
     ? ((profile.summary.revenueYtd - profile.summary.revenueYtdLy) / profile.summary.revenueYtdLy) * 100
     : null
 
+  // Active Bookings summary figures (2026-07-16) — see the section's own comment for why "+"
+  // appears when the API's per-list cap (20) is below the true total count.
+  const confirmedArrivalsValueSum = profile ? profile.confirmedArrivals.reduce((t, b) => t + b.value, 0) : 0
+  const confirmedArrivalsTruncated = profile ? profile.confirmedArrivalsTotalCt > profile.confirmedArrivals.length : false
+  const provisionalValueSum = profile ? profile.provisionalBookings.reduce((t, b) => t + b.value, 0) : 0
+  const provisionalTruncated = profile ? profile.provisionalTotalCt > profile.provisionalBookings.length : false
+  // "Expiring soon" — same <=2 day threshold already used elsewhere in the app (AgentProfilePanel's
+  // urgency chip) for a provisional booking's held-until-expiry window.
+  const expiringSoonCount = profile ? profile.provisionalBookings.filter((b) => b.daysToExpiry !== null && b.daysToExpiry <= 2).length : 0
+
   return (
     <Drawer anchor="right" open={!!agentId} onClose={onClose}>
       <Box sx={{ width: { xs: '100vw', sm: '44%' }, minWidth: { sm: 460 }, maxWidth: { sm: 660 }, height: '100%', bgcolor: T.cd, display: 'flex', flexDirection: 'column', fontFamily: T.sa }}>
@@ -244,85 +254,45 @@ export default function SalesExecAgentPanel({ agentId, onClose }: Props) {
                 </Box>
               </Box>
 
-              {/* Active Bookings — two tables side by side */}
+              {/* Active Bookings — summary only (2026-07-16, simplified per request: no itemized
+                  per-reservation rows). Value sums are computed from the fetched rows (API caps
+                  each list at 20); counts use the true, unlimited totals. When more rows exist
+                  than were fetched, the value is marked with a trailing "+" so it reads as a
+                  floor, not a complete total — never silently presented as exact when it isn't. */}
               <Box sx={{ mb: '24px' }}>
                 <SectionHeading title="Active Bookings" sub="Live reservations for this agent" />
                 <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-                  <Box>
-                    <Typography sx={{ fontSize: 10, color: T.ink2, mb: '7px' }}>Upcoming Confirmed Arrivals</Typography>
-                    <Box sx={{ overflowX: 'auto' }}>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={cellHeadSx}>Res</TableCell>
-                            <TableCell sx={cellHeadSx}>Property</TableCell>
-                            <TableCell align="center" sx={cellHeadSx}>Arrival</TableCell>
-                            <TableCell align="right" sx={cellHeadSx}>Value</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {profile.confirmedArrivals.map((b, idx) => (
-                            <TableRow key={`${b.reservationNumber}-${idx}`}>
-                              <TableCell sx={{ ...cellSx, color: T.oc, fontWeight: 600 }}>{b.reservationNumber}</TableCell>
-                              <TableCell sx={{ ...cellSx, fontFamily: T.sa, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.property}</TableCell>
-                              <TableCell align="center" sx={cellSx}>{b.arrivalDate}</TableCell>
-                              <TableCell align="right" sx={cellSx}>${b.value.toLocaleString()}</TableCell>
-                            </TableRow>
-                          ))}
-                          {profile.confirmedArrivals.length === 0 && (
-                            <TableRow><TableCell colSpan={4} align="center" sx={{ ...cellSx, fontStyle: 'italic', border: 0 }}>None in the next 30 days</TableCell></TableRow>
-                          )}
-                        </TableBody>
-                      </Table>
-                    </Box>
-                    {profile.confirmedArrivalsTotalCt > profile.confirmedArrivals.length && (
-                      <Typography sx={{ fontSize: 10, color: T.mu, fontStyle: 'italic', mt: '4px' }}>
-                        +{profile.confirmedArrivalsTotalCt - profile.confirmedArrivals.length} more
-                      </Typography>
-                    )}
+                  <Box sx={{ bgcolor: T.sf, border: `0.5px solid ${T.br}`, borderRadius: '8px', p: '13px 14px' }}>
+                    <Typography sx={{ fontFamily: T.se, fontSize: 22, fontWeight: 600, color: T.ink, lineHeight: 1 }}>
+                      {profile.confirmedArrivalsTotalCt.toLocaleString()}
+                    </Typography>
+                    <Typography sx={{ fontSize: 8.5, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: T.mu, mt: '5px' }}>
+                      Confirmed Arrivals Upcoming
+                    </Typography>
+                    <Typography sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, mt: '6px' }}>
+                      {fmtDollar(confirmedArrivalsValueSum)}{confirmedArrivalsTruncated ? '+' : ''} total value
+                    </Typography>
                   </Box>
-                  <Box>
-                    <Typography sx={{ fontSize: 10, color: T.ink2, mb: '7px' }}>Provisional Bookings Pending</Typography>
-                    <Box sx={{ overflowX: 'auto' }}>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={cellHeadSx}>Res</TableCell>
-                            <TableCell sx={cellHeadSx}>Property</TableCell>
-                            <TableCell align="center" sx={cellHeadSx}>Arr</TableCell>
-                            <TableCell align="center" sx={cellHeadSx}>Expiry</TableCell>
-                            <TableCell align="right" sx={cellHeadSx}>Value</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {profile.provisionalBookings.map((b, idx) => (
-                            <TableRow key={`${b.reservationNumber}-${idx}`}>
-                              <TableCell sx={{ ...cellSx, color: T.oc, fontWeight: 600 }}>{b.reservationNumber}</TableCell>
-                              <TableCell sx={{ ...cellSx, fontFamily: T.sa, maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.property}</TableCell>
-                              <TableCell align="center" sx={cellSx}>{b.arrivalDate}</TableCell>
-                              <TableCell align="center" sx={cellSx}>{b.daysToExpiry === null ? b.expiryDate : `${b.daysToExpiry}d`}</TableCell>
-                              <TableCell align="right" sx={cellSx}>${b.value.toLocaleString()}</TableCell>
-                            </TableRow>
-                          ))}
-                          {profile.provisionalBookings.length === 0 && (
-                            <TableRow><TableCell colSpan={5} align="center" sx={{ ...cellSx, fontStyle: 'italic', border: 0 }}>No provisional bookings pending</TableCell></TableRow>
-                          )}
-                        </TableBody>
-                      </Table>
-                    </Box>
-                    {profile.provisionalTotalCt > profile.provisionalBookings.length && (
-                      <Typography sx={{ fontSize: 10, color: T.mu, fontStyle: 'italic', mt: '4px' }}>
-                        +{profile.provisionalTotalCt - profile.provisionalBookings.length} more
-                      </Typography>
-                    )}
+                  <Box sx={{ bgcolor: T.sf, border: `0.5px solid ${T.br}`, borderRadius: '8px', p: '13px 14px' }}>
+                    <Typography sx={{ fontFamily: T.se, fontSize: 22, fontWeight: 600, color: T.ink, lineHeight: 1 }}>
+                      {profile.provisionalTotalCt.toLocaleString()}
+                    </Typography>
+                    <Typography sx={{ fontSize: 8.5, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: T.mu, mt: '5px' }}>
+                      Provisional Bookings Pending
+                    </Typography>
+                    <Typography sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, mt: '6px' }}>
+                      {fmtDollar(provisionalValueSum)}{provisionalTruncated ? '+' : ''} total value
+                      {expiringSoonCount > 0 ? ` · ${expiringSoonCount} expiring soon` : ''}
+                    </Typography>
                   </Box>
                 </Box>
               </Box>
 
-              {/* Cancellation History */}
+              {/* Cancellation History — summary only (2026-07-16, simplified per request: no
+                  itemized per-booking rows, just the 3 summary stats). */}
               <Box sx={{ mb: '24px' }}>
                 <SectionHeading title="Cancellation History" sub="All-time" />
-                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '9px', mb: '12px' }}>
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '9px' }}>
                   <Box sx={{ bgcolor: '#FDF0EE', border: '0.5px solid rgba(192,57,43,0.35)', borderRadius: '8px', p: '11px 12px' }}>
                     <Typography sx={{ fontFamily: T.se, fontSize: 22, fontWeight: 600, color: T.rr, lineHeight: 1 }}>{profile.cancellationSummary.totalCancelledBookings.toLocaleString()}</Typography>
                     <Typography sx={{ fontSize: 8, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: T.mu, mt: '6px' }}>Cancelled</Typography>
@@ -336,22 +306,6 @@ export default function SalesExecAgentPanel({ agentId, onClose }: Props) {
                     <Typography sx={{ fontSize: 8, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: T.mu, mt: '6px' }}>Revenue Lost</Typography>
                   </Box>
                 </Box>
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {profile.cancellationHistory.map((c, idx) => (
-                    <Box key={`${c.reservationNumber}-${idx}`} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: T.ink2, px: '9px', py: '6px', bgcolor: T.sf, borderRadius: '6px' }}>
-                      <span>{c.reservationNumber} · {c.property}</span>
-                      <Box component="span" sx={{ fontFamily: T.mo, fontSize: 10, color: T.rr }}>−${c.revenueLost.toLocaleString()}</Box>
-                    </Box>
-                  ))}
-                  {profile.cancellationHistory.length === 0 && (
-                    <Typography sx={{ fontSize: 11, color: T.mu, fontStyle: 'italic' }}>No cancellations on record</Typography>
-                  )}
-                </Box>
-                {profile.cancellationSummary.totalCancelledBookings > profile.cancellationHistory.length && (
-                  <Typography sx={{ fontSize: 10, color: T.mu, fontStyle: 'italic', mt: '6px' }}>
-                    +{profile.cancellationSummary.totalCancelledBookings - profile.cancellationHistory.length} more
-                  </Typography>
-                )}
               </Box>
 
               {/* Footer stats */}

@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import Autocomplete, { createFilterOptions } from '@mui/material/Autocomplete'
 import TextField from '@mui/material/TextField'
 import type { AgentYearly } from '@/types'
@@ -22,17 +22,29 @@ type Props = {
 
 export default function SesAgentSearch({ agents, onSelectAgent }: Props) {
   const [inputValue, setInputValue] = useState('')
+  // Dropdown-overlap fix (2026-07-16) — the popup was staying open (and painting over the Agent
+  // Panel drawer that opens on selection) because nothing explicitly closed it or moved focus
+  // away. `open` is now controlled directly, and the input is blurred on selection, so the popper
+  // reliably unmounts before the drawer opens rather than lingering on top of it.
+  const [open, setOpen] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   return (
     <Autocomplete
       size="small"
-      openOnFocus
+      open={open}
+      onOpen={() => setOpen(true)}
+      onClose={() => setOpen(false)}
       options={agents}
       filterOptions={filterAgents}
       getOptionLabel={(o) => o.nm}
       inputValue={inputValue}
       onInputChange={(_, v) => setInputValue(v)}
-      onChange={(_, v) => { if (v) onSelectAgent(v.id) }}
+      onChange={(_, v) => {
+        setOpen(false)
+        inputRef.current?.blur()
+        if (v) onSelectAgent(v.id)
+      }}
       isOptionEqualToValue={(o, v) => o.id === v.id}
       noOptionsText="No agents match"
       sx={{ width: 240 }}
@@ -47,6 +59,7 @@ export default function SesAgentSearch({ agents, onSelectAgent }: Props) {
       renderInput={(params) => (
         <TextField
           {...params}
+          inputRef={inputRef}
           placeholder="Find Agent"
           variant="outlined"
           sx={{
