@@ -83,6 +83,24 @@ function fmtMoneyK(v: number): string {
   return `${sign}$${Math.round(Math.abs(v) / 1000)}K`
 }
 
+// Always-visible chart key (2026-07-16, chart-legend audit) — swatch + label, same "thickness
+// distinguishes solid vs dashed" convention already used by PaceView/ExecSummaryView/
+// BookingStatusMovementView's inline legend rows, not a chart-native Chart.js legend (kept off via
+// CHART_OPTS' legend:false everywhere, since Chart.js's own legend widget doesn't match this app's
+// type scale/spacing as cleanly as a plain Box row does).
+function ChartLegend({ items }: { items: { label: string; color: string; dashed?: boolean }[] }) {
+  return (
+    <Box sx={{ display: 'flex', gap: 2, mt: 1, flexWrap: 'wrap' }}>
+      {items.map((it) => (
+        <Box key={it.label} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Box sx={{ width: 12, height: it.dashed ? 2 : 3, bgcolor: it.color, borderRadius: 1 }} />
+          <Typography variant="caption">{it.label}</Typography>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 function StatusBadge({ status }: { status: 'ok' | 'tbc' | 'ndl' }) {
   if (status === 'ndl') {
     return <Chip label="NDL" size="small" sx={{ height: 16, fontSize: '0.5625rem', bgcolor: '#E8E2D8', color: '#8A7D70', border: '0.5px solid', borderColor: NDL_BORDER }} />
@@ -540,6 +558,12 @@ export default function FinanceView() {
                   <Box sx={{ height: 130, mt: 1 }}>
                     <Line data={revenuePaceData} options={lineOpts} />
                   </Box>
+                  <ChartLegend
+                    items={[
+                      ...(revenuePaceStatus === 'ok' && ma ? [{ label: 'Actual', color: CHART_COLORS.trend }] : []),
+                      { label: 'Budget', color: CHART_COLORS.comparison, dashed: true },
+                    ]}
+                  />
                 </>
               )}
             </CardContent>
@@ -562,6 +586,14 @@ export default function FinanceView() {
                         runtime (same technique as a bar-chart-with-line-overlay anywhere else). */}
                     <Bar data={costStackData as never} options={barOpts} />
                   </Box>
+                  <ChartLegend
+                    items={[
+                      { label: 'Managed Costs', color: CHART_COLORS.categoryRotation[1] },
+                      { label: 'Imposed Costs', color: CHART_COLORS.negative },
+                      { label: costStackOk ? 'Revenue (Actual)' : 'Revenue (Budget)', color: CHART_COLORS.trend },
+                      ...(costStackOk ? [{ label: 'Revenue (Budget)', color: CHART_COLORS.comparison, dashed: true }] : []),
+                    ]}
+                  />
                 </>
               )}
             </CardContent>
@@ -574,9 +606,18 @@ export default function FinanceView() {
                 Net Profit Waterfall
               </Typography>
               {netProfitWaterfallStatus === 'ok' ? (
-                <Box sx={{ height: 130, mt: 1 }}>
-                  <Bar data={waterfallData} options={waterfallOpts} />
-                </Box>
+                <>
+                  <Box sx={{ height: 130, mt: 1 }}>
+                    <Bar data={waterfallData} options={waterfallOpts} />
+                  </Box>
+                  <ChartLegend
+                    items={[
+                      { label: 'Total', color: CHART_COLORS.budgetGold },
+                      { label: 'Increase', color: CHART_COLORS.positive },
+                      { label: 'Decrease', color: CHART_COLORS.negative },
+                    ]}
+                  />
+                </>
               ) : (
                 <EmptyState message="No data loaded — this is an Actual-vs-Budget bridge chart, so it needs real Actual figures to mean anything." height={130} />
               )}

@@ -2303,6 +2303,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const portfolioOccPct = availableSum > 0 ? (soldSum / availableSum) * 100 : 0
     const revparOccCaption = selectedPropertyName ?? 'portfolio-wide, 15 properties'
 
+    // Occupancy vs Budget (2026-07-16) — budget_2026_monthly.csv has no dedicated occupancy-target
+    // field, but one is directly derivable from two fields it DOES have: budgetRns (target room
+    // nights sold) ÷ availableSum (the same Dennis-confirmed annual capacity figure occPct's own
+    // Actual side already divides by, above) — not a fabricated metric, the same formula that
+    // produces portfolioOccPct itself. Full-year 2026 basis throughout, matching occPct/revpar's
+    // own scope (neither respects the Topbar's MTD/YTD toggle — see their comment above), so this
+    // stays apples-to-apples rather than comparing a full-year Actual against a partial-year Budget.
+    const occBudgetRns = property !== 'all' ? getPropertyBudget(property, cy, 1, 12).rns : getPortfolioBudget(cy, 1, 12).rns
+    const portfolioOccPctBudget = availableSum > 0 ? (occBudgetRns / availableSum) * 100 : 0
+
     const KP_BASE = {
       pace: {
         // STLY basis, BOUNDED 1-year window on both sides (see kpiConfirmedBounded/
@@ -2340,7 +2350,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         // rather than a fabricated one. Thresholds are first-pass placeholders, not yet
         // calibrated against a full year of this exact aggregate.
         revpar: kpi(portfolioRevpar, '$', 'RevPAR', revparOccCaption, 400, 300),
-        occPct: kpi(portfolioOccPct, 'pct', 'Occupancy %', revparOccCaption, 55, 45),
+        // `ly` slot carries the Budget Occupancy % target (see portfolioOccPctBudget above),
+        // `budget: true` so KpiRow/budgetVariance label it "BUDGET" instead of YoY — same
+        // convention as pace.budgetMtd/budgetYtd.
+        occPct: kpi(portfolioOccPct, 'pct', 'Occupancy %', revparOccCaption, 55, 45, undefined, portfolioOccPctBudget, undefined, true),
       },
       agents: {
         active: kpi(activeAgents, 'int', 'Active Trade Partners', 'this period', 700, 500, undefined, activeAgentsLy),

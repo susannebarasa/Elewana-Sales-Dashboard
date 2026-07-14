@@ -1,5 +1,6 @@
 'use client'
 import type { ReactNode } from 'react'
+import { useEffect, useRef } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import ButtonGroup from '@mui/material/ButtonGroup'
@@ -63,6 +64,11 @@ type Props = {
   onFilters: (f: SesFilters) => void
   onSelectAgent: (agentId: string) => void
   onSelectProperty: (context: EntityClickContext) => void
+  // Reports the combined Header + filter-bar height (2026-07-16, Agent Panel height fix) so the
+  // Agent Panel drawer can start below it instead of overlaying the whole viewport — measured via
+  // ResizeObserver rather than a hardcoded pixel value since the filter bar wraps to a 2nd row on
+  // narrow viewports (flexWrap: 'wrap'), which would make a fixed number wrong.
+  onHeaderHeight?: (height: number) => void
 }
 
 const CHART_OPTS = {
@@ -86,8 +92,11 @@ function Variance({ metric }: { metric: KpiMetric }) {
 }
 
 // RAG (red/amber/green) KPI status — 2026-07-16 design edit, ported from the Claude Design
-// mockup: r < 0%, a < 2.5%, g >= 2.5% YoY. 'neutral' when no real YoY comparator exists (e.g.
-// Occupancy % has none — never fabricated, matches the mockup's ses-app.js/ses-data.js gap note).
+// mockup: r < 0%, a < 2.5%, g >= 2.5% (YoY, or vs Budget for Occupancy % — see below).
+// 'neutral' when no real comparator exists at all — never fabricated. Occupancy % has no real
+// prior-year capacity query (matches the mockup's ses-app.js/ses-data.js gap note), but as of
+// 2026-07-16 carries a genuine Budget Occupancy % in the same `ly` slot instead (see its KpiCard
+// usage below) — this function doesn't care which baseline populated `ly`, just that it's real.
 type Rag = 'r' | 'a' | 'g' | 'neutral'
 function ragFromYoyPct(pct: number | null): Rag {
   if (pct === null || pct === undefined || isNaN(pct)) return 'neutral'
@@ -140,12 +149,30 @@ function NarrativePill({ value, label, sub, color }: { value: string; label: str
   )
 }
 
-function ChartCard({ title, sub, children, height = 230 }: { title: string; sub: string; children: ReactNode; height?: number }) {
+// Always-visible chart key (2026-07-16, chart-legend audit) — swatch + label, matching the
+// convention already used by PaceView/ExecSummaryView/BookingStatusMovementView's inline legend
+// rows rather than Chart.js's own legend widget (kept off via CHART_OPTS' legend:false everywhere
+// on this page, since the native widget doesn't match this page's type scale as cleanly).
+function ChartLegend({ items }: { items: { label: string; color: string; dashed?: boolean }[] }) {
+  return (
+    <Box sx={{ display: 'flex', gap: '14px', mt: '10px', flexWrap: 'wrap' }}>
+      {items.map((it) => (
+        <Box key={it.label} sx={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Box sx={{ width: 12, height: it.dashed ? 2 : 3, bgcolor: it.color, borderRadius: '2px' }} />
+          <Typography sx={{ fontSize: 10, color: T.mu }}>{it.label}</Typography>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+function ChartCard({ title, sub, children, height = 230, legend }: { title: string; sub: string; children: ReactNode; height?: number; legend?: ReactNode }) {
   return (
     <Box sx={{ bgcolor: T.cd, border: `0.5px solid ${T.br}`, borderRadius: '9px', p: '16px 18px', flex: 1 }}>
       <Typography sx={{ fontFamily: T.se, fontSize: 18, fontWeight: 500, color: T.ink, letterSpacing: '-0.005em' }}>{title}</Typography>
       <Typography sx={{ fontSize: 10, color: T.mu, mb: '12px', fontStyle: 'italic' }}>{sub}</Typography>
       <Box sx={{ height, position: 'relative' }}>{children}</Box>
+      {legend}
     </Box>
   )
 }
@@ -157,19 +184,30 @@ const selSx = {
   '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: T.oc },
 }
 
-export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, onSelectAgent, onSelectProperty }: Props) {
+export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, onSelectAgent, onSelectProperty, onHeaderHeight }: Props) {
   const kp = data.KP_BASE
   const propertyLabel = filters.property === 'all'
     ? 'All Properties'
     : PROPERTY_OPTIONS.find((p) => p.value === filters.property)?.label ?? filters.property
   const periodLabel = filters.period === 'm' ? `Month to date · ${filters.year}` : filters.period === 'y' ? `Year to date · ${filters.year}` : `Full year · ${filters.year}`
 
+  const headerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = headerRef.current
+    if (!el || !onHeaderHeight) return
+    const report = () => onHeaderHeight(el.offsetHeight)
+    report()
+    const ro = new ResizeObserver(report)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [onHeaderHeight])
+
   // Room Revenue label override — same "Actualized, not full-year" honesty note as
   // src/components/views/ExecSummaryView.tsx's roomRevenueActualized (occ.rev is
   // actualized-stays-only; Agent Room Revenue elsewhere includes forward-confirmed bookings).
   const roomRevenue = kp.occ.rev
 
-  const narrative = buildExecutiveNarrative(data, filters.property)
+  const narrative = buildExecutiveNarrative(data)
   const [headline, ...body] = narrative
 
   const paceChartData = {
@@ -203,6 +241,7 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
 
   return (
     <Box sx={{ fontFamily: T.sa, color: T.ink2 }}>
+      <Box ref={headerRef}>
       {/* Header */}
       <Box sx={{ bgcolor: T.cd, borderBottom: `0.5px solid ${T.br}`, px: '30px', py: '14px', display: 'flex', alignItems: 'center', gap: '16px' }}>
         <Box component="img" src="/elewana-collection-logo.png" alt="Elewana Collection" sx={{ height: 38, width: 'auto' }} />
@@ -262,6 +301,7 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
           <SesAgentSearch agents={data.AD.yearly} onSelectAgent={onSelectAgent} />
         </Box>
       </Box>
+      </Box>
 
       {/* Content */}
       <Box sx={{ px: '30px', py: '22px 30px 44px', maxWidth: 1360, mx: 'auto' }}>
@@ -281,7 +321,12 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', mb: '16px' }}>
           <KpiCard label="Room Revenue (Actualized)" metric={roomRevenue} caption="vs last year" />
           <KpiCard label="Room Nights Sold" metric={kp.occ.nights} caption="vs last year" />
-          <KpiCard label="Occupancy %" metric={kp.occ.occPct} caption="vs last year" />
+          {/* caption reads "vs Budget", not "vs last year" — Occupancy % has no real prior-year
+              capacity query to compare against (see ragFromYoyPct's comment above), but as of
+              2026-07-16 kp.occ.occPct.ly now carries a real Budget Occupancy % target instead
+              (budgetRns ÷ available room nights, same derivation as the Actual side), so this
+              card's badge is a genuine Budget variance, not a fabricated YoY one. */}
+          <KpiCard label="Occupancy %" metric={kp.occ.occPct} caption="vs Budget" />
           <KpiCard label="ADR" metric={kp.occ.adr} caption="vs last year" />
         </Box>
 
@@ -317,7 +362,11 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
 
         {/* Charts */}
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', mb: '16px' }}>
-          <ChartCard title="Monthly Revenue Trend — 2026 vs LY" sub={`Monthly confirmed Room Revenue, this year vs last`}>
+          <ChartCard
+            title="Monthly Revenue Trend — 2026 vs LY"
+            sub={`Monthly confirmed Room Revenue, this year vs last`}
+            legend={<ChartLegend items={[{ label: filters.year, color: T.oc }, { label: 'Last Year', color: T.ly, dashed: true }]} />}
+          >
             <Line
               data={paceChartData}
               options={{

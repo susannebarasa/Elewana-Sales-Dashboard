@@ -1,23 +1,19 @@
 import type { DashboardData } from '@/types'
 
-// Executive Story Panel (2026-07-09, shortened 2026-07-16) — deterministic, template-based
-// narrative for Sales Executive Summary. NO LLM: every sentence is assembled from fields already
-// computed elsewhere on this dashboard (KP_BASE, REVPAR, AGENT_PACE, CANCEL_DRIVERS) — this is
-// presentation logic only, picking top/bottom N and formatting, never a new query or a new number.
+// Executive Story Panel (2026-07-09, cut to 2 sentences same day per explicit request) —
+// deterministic, template-based narrative for Sales Executive Summary. NO LLM: every sentence is
+// assembled from fields already computed elsewhere on this dashboard (KP_BASE, AGENT_PACE) — this
+// is presentation logic only, picking top/bottom N and formatting, never a new query or a new
+// number.
 //
-// Tone is tied to DATA SOURCE, not toggled per sentence by hand:
-//   - CONFIDENT (sentence 1): Room Revenue vs Budget — repeatedly verified today.
-//   - HEDGED (sentences 2-3): RevPAR, then Agent Pace + Forecast + Cancellation Drivers combined
-//     into one sentence — built/corrected today, less battle-tested. Each hedge phrase names WHY
-//     it's hedged (newly-corrected methodology / worth a follow-up review / not yet independently
-//     reviewed) rather than a generic "may be inaccurate" — the reader should know what's actually
-//     uncertain. Condensed from 4 sentences to 3 (2026-07-16 design pass) by merging the two most
-//     forward-looking/least-critical items (Agent Pace, Forecast+Cancellations) — no content
-//     dropped, just combined and tightened.
+// Both sentences are CONFIDENT tone — Room Revenue vs Budget and Agent Pace movers are the two
+// items that have been independently re-derived and confirmed clean. The RevPAR sentence and the
+// combined Forecast + Cancellation Drivers sentence were dropped entirely (not just softened) —
+// both were hedged/unverified and hadn't been confirmed against real business expectations. RevPAR
+// itself is unaffected outside the narrative — it still has its own KPI pill on this page
+// (SalesExecutiveSummaryDesign.tsx's NarrativePill), sourced directly from KP_BASE, not from here.
 
 const fmtM = (v: number): string => `$${v.toFixed(1)}M`
-const fmtWhole = (v: number): string => `$${Math.round(v).toLocaleString()}`
-const fmtK1 = (v: number): string => `$${(v / 1000).toFixed(1)}k`
 
 // Threshold scale — approved 2026-07-09. Anchored to the same 100/95/85 breakpoints already
 // used for RAG coloring elsewhere (KpiRow's thG/thY), so "slightly behind" here means the same
@@ -39,67 +35,20 @@ function sentence1(data: DashboardData): string {
   return `Room Revenue YTD is ${fmtM(actual)} against a ${fmtM(budget)} budget (${pct.toFixed(1)}% of budget), ${paceDescriptor(pct)}.`
 }
 
-// Sentence 2 (HEDGED) — RevPAR, top 2 + softest when portfolio-wide. When a single property is
-// selected (2026-07-16, "no exceptions" property-filter pass), the top-2/softest COMPARATIVE
-// framing is structurally meaningless — you can't rank one thing against itself — so this
-// branches to a direct single-property statement instead, sourced from PROPERTY_PERFORMANCE
-// (same full-year-2026 basis as REVPAR.byProperty, already carries budgetVariancePct which
-// REVPAR.byProperty does not, so no separate query needed).
-function sentence2(data: DashboardData, property: string): string {
-  if (property !== 'all') {
-    const row = data.PROPERTY_PERFORMANCE.find((r) => r.propertyId === property)
-    if (!row || row.revpar === null) {
-      return 'RevPAR for this property isn’t available this period — no completed stays to compute it from yet.'
-    }
-    const budgetClause = row.budgetVariancePct !== null
-      ? `, at ${row.budgetVariancePct.toFixed(1)}% of budget`
-      : ' (no budget set for this property)'
-    const caveatClause = row.caveat ? ` — ${row.caveat}` : ''
-    return `${row.propertyName}'s RevPAR is ${fmtWhole(row.revpar)}${budgetClause}${caveatClause}.`
-  }
-
-  const clean = data.REVPAR.byProperty.filter((r) => r.revpar !== null && r.caveat === null)
-  const sorted = [...clean].sort((a, b) => (b.revpar as number) - (a.revpar as number))
-  if (sorted.length < 3) {
-    return 'Early RevPAR signals — based on newly-corrected methodology — are not yet distinct enough across properties to call out leaders or laggards.'
-  }
-  const top2 = sorted.slice(0, 2)
-  const softest = sorted[sorted.length - 1]
-  const top2Str = top2.map((r) => `${r.propertyName} (${fmtWhole(r.revpar as number)})`).join(' and ')
-
-  // "despite being one of the higher-revenue properties" — only said if genuinely true, checked
-  // against this same property's actual Room Revenue rank, not assumed.
-  const byRevenue = [...data.REVPAR.byProperty]
-    .filter((r) => r.roomRevenue !== null)
-    .sort((a, b) => (b.roomRevenue as number) - (a.roomRevenue as number))
-  const revenueRank = byRevenue.findIndex((r) => r.propertyName === softest.propertyName)
-  const suffix = revenueRank !== -1 && revenueRank < 3 ? ' despite being one of the higher-revenue properties by volume' : ''
-
-  return `Early RevPAR figures (newly-corrected methodology) point to ${top2Str} leading the portfolio, while ${softest.propertyName} (${fmtWhole(softest.revpar as number)}) is the softest performer${suffix}.`
-}
-
-// Sentence 3 (HEDGED, combined 2026-07-16) — Agent Pace movers + Forecast + top Cancellation
-// Driver in one sentence: the two most forward-looking, least-battle-tested items, merged to get
-// the panel to 3 sentences without dropping content. AGENT_PACE.gainers/decliners are already
-// sorted by absVar (see route.ts) — just take the top 2 of each. execPace.vsForecast's own `d`
-// field already carries the exact month range this ratio covers — reused verbatim.
-function sentence3(data: DashboardData): string {
+// Sentence 2 (CONFIDENT) — Agent Pace movers only. AGENT_PACE.gainers/decliners are already
+// sorted by absVar (see route.ts) — just take the top 2 of each. No Forecast or Cancellation
+// Drivers content here (dropped per explicit request, not merged in).
+function sentence2(data: DashboardData): string {
   const gainers = data.AGENT_PACE.gainers.slice(0, 2)
   const decliners = data.AGENT_PACE.decliners.slice(0, 2)
-  const paceClause = gainers.length === 0 && decliners.length === 0
-    ? 'no agents meet the minimum-volume threshold this period to call out gainers or decliners'
-    : `${gainers.map((a) => `${a.agentName} (+${a.absVar.toLocaleString()} nights)`).join(' and ')} are growing fastest while ${decliners.map((a) => `${a.agentName} (${a.absVar.toLocaleString()} nights)`).join(' and ')} are softening`
-
-  const fc = data.KP_BASE.execPace.vsForecast
-  const monthRange = fc.d.replace(' forecast vs budget', '')
-  const top = data.CANCEL_DRIVERS[0]
-  const cancelClause = top
-    ? `${top.agentName} leads cancellations over the last 30 days (${fmtK1(top.revenueLost)} across ${top.cancelledBookings.toLocaleString()} bookings)`
-    : 'no material cancellation drivers stand out over the last 30 days'
-
-  return `Agent Pace-wise, ${paceClause} — worth a follow-up review; the forward forecast for ${monthRange} is tracking at ${fc.v.toFixed(1)}% of budget, and ${cancelClause}, both based on methodology finalized today and not yet independently reviewed.`
+  if (gainers.length === 0 && decliners.length === 0) {
+    return 'No agents meet the minimum-volume threshold this period to call out gainers or decliners.'
+  }
+  const gainStr = gainers.map((a) => `${a.agentName} (+${a.absVar.toLocaleString()} nights)`).join(' and ')
+  const declineStr = decliners.map((a) => `${a.agentName} (${a.absVar.toLocaleString()} nights)`).join(' and ')
+  return `Agent Pace-wise, ${gainStr} are growing fastest while ${declineStr} are softening.`
 }
 
-export function buildExecutiveNarrative(data: DashboardData, property: string): string[] {
-  return [sentence1(data), sentence2(data, property), sentence3(data)]
+export function buildExecutiveNarrative(data: DashboardData): string[] {
+  return [sentence1(data), sentence2(data)]
 }

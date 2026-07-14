@@ -73,9 +73,14 @@ const cellSx = { fontFamily: T.mo, fontSize: 10.5, color: T.ink2, borderBottom: 
 type Props = {
   agentId: string | null
   onClose: () => void
+  // Measured Header + filter-bar height in px (2026-07-16 correction) — the panel starts below
+  // this point rather than covering the whole viewport, and its height is trimmed to match
+  // (calc(100dvh - topOffset)) so it ends exactly at the bottom of the page's content area with
+  // no gap, instead of either overlaying the header or stopping short of the true bottom.
+  topOffset?: number
 }
 
-export default function SalesExecAgentPanel({ agentId, onClose }: Props) {
+export default function SalesExecAgentPanel({ agentId, onClose, topOffset = 0 }: Props) {
   const [profile, setProfile] = useState<AgentProfile | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -122,7 +127,18 @@ export default function SalesExecAgentPanel({ agentId, onClose }: Props) {
   const expiringSoonCount = profile ? profile.provisionalBookings.filter((b) => b.daysToExpiry !== null && b.daysToExpiry <= 2).length : 0
 
   return (
-    <Drawer anchor="right" open={!!agentId} onClose={onClose}>
+    // Paper's top/height forced via MUI v9's slotProps API (PaperProps was removed in v9) — the
+    // panel starts below the page's own Header + filter bar (topOffset, measured live via
+    // SalesExecutiveSummaryDesign's ResizeObserver, see page.tsx) rather than covering it, and its
+    // height is trimmed to calc(100dvh - topOffset) so the bottom edge lands exactly at the
+    // viewport's true bottom — the library default (height:100%, top:0) would otherwise overlay
+    // the header and, on some viewports, stop short of the true bottom (dvh vs vh).
+    <Drawer
+      anchor="right"
+      open={!!agentId}
+      onClose={onClose}
+      slotProps={{ paper: { sx: { top: topOffset, height: `calc(100dvh - ${topOffset}px)` } } }}
+    >
       <Box sx={{ width: { xs: '100vw', sm: '44%' }, minWidth: { sm: 460 }, maxWidth: { sm: 660 }, height: '100%', bgcolor: T.cd, display: 'flex', flexDirection: 'column', fontFamily: T.sa }}>
         <Box sx={{ position: 'relative', flex: 1, overflowY: 'auto', p: '26px 28px 36px' }}>
           <IconButton

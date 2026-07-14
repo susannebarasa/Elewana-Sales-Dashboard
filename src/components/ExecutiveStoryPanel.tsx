@@ -12,8 +12,8 @@ import { buildExecutiveNarrative } from '@/lib/execNarrative'
 // Rendered as one flowing paragraph rather than separate bullets, since the sentences are meant to
 // read as a short briefing, not a checklist. A tasteful drop shadow (not a heavy/skeuomorphic one)
 // lifts it slightly above the page, distinguishing it from the flat bordered cards around it.
-export default function ExecutiveStoryPanel({ data, property }: { data: DashboardData; property: string }) {
-  const sentences = buildExecutiveNarrative(data, property)
+export default function ExecutiveStoryPanel({ data }: { data: DashboardData; property: string }) {
+  const sentences = buildExecutiveNarrative(data)
   return (
     <Card
       sx={{

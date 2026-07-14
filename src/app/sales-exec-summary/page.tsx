@@ -28,6 +28,11 @@ export default function SalesExecutiveSummaryPage() {
   const [error, setError] = useState<string | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null)
+  // Measured Header + filter-bar height (2026-07-16, Agent Panel height fix) — the Agent Panel
+  // drawer starts below this instead of overlaying the whole viewport. 118 is a sensible fallback
+  // for the very first paint before SalesExecutiveSummaryDesign's ResizeObserver reports the real
+  // value; it's overwritten immediately on mount.
+  const [headerHeight, setHeaderHeight] = useState(118)
   const cacheRef = useRef<Map<string, DashboardData>>(new Map())
 
   useEffect(() => {
@@ -85,9 +90,10 @@ export default function SalesExecutiveSummaryPage() {
           onFilters={setFilters}
           onSelectAgent={setSelectedAgentId}
           onSelectProperty={handleSelectProperty}
+          onHeaderHeight={setHeaderHeight}
         />
       )}
-      <SalesExecAgentPanel agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />
+      <SalesExecAgentPanel agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} topOffset={headerHeight} />
       <PropertyProfilePanel propertyId={selectedPropertyId} onClose={() => setSelectedPropertyId(null)} />
     </Box>
   )
