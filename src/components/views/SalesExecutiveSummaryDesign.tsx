@@ -1,6 +1,5 @@
 'use client'
 import type { ReactNode } from 'react'
-import { useEffect, useRef } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import ButtonGroup from '@mui/material/ButtonGroup'
@@ -64,11 +63,6 @@ type Props = {
   onFilters: (f: SesFilters) => void
   onSelectAgent: (agentId: string) => void
   onSelectProperty: (context: EntityClickContext) => void
-  // Reports the combined Header + filter-bar height (2026-07-16, Agent Panel height fix) so the
-  // Agent Panel drawer can start below it instead of overlaying the whole viewport — measured via
-  // ResizeObserver rather than a hardcoded pixel value since the filter bar wraps to a 2nd row on
-  // narrow viewports (flexWrap: 'wrap'), which would make a fixed number wrong.
-  onHeaderHeight?: (height: number) => void
 }
 
 const CHART_OPTS = {
@@ -184,30 +178,19 @@ const selSx = {
   '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: T.oc },
 }
 
-export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, onSelectAgent, onSelectProperty, onHeaderHeight }: Props) {
+export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, onSelectAgent, onSelectProperty }: Props) {
   const kp = data.KP_BASE
   const propertyLabel = filters.property === 'all'
     ? 'All Properties'
     : PROPERTY_OPTIONS.find((p) => p.value === filters.property)?.label ?? filters.property
   const periodLabel = filters.period === 'm' ? `Month to date · ${filters.year}` : filters.period === 'y' ? `Year to date · ${filters.year}` : `Full year · ${filters.year}`
 
-  const headerRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const el = headerRef.current
-    if (!el || !onHeaderHeight) return
-    const report = () => onHeaderHeight(el.offsetHeight)
-    report()
-    const ro = new ResizeObserver(report)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [onHeaderHeight])
-
   // Room Revenue label override — same "Actualized, not full-year" honesty note as
   // src/components/views/ExecSummaryView.tsx's roomRevenueActualized (occ.rev is
   // actualized-stays-only; Agent Room Revenue elsewhere includes forward-confirmed bookings).
   const roomRevenue = kp.occ.rev
 
-  const narrative = buildExecutiveNarrative(data)
+  const narrative = buildExecutiveNarrative(data, filters.period)
   const [headline, ...body] = narrative
 
   const paceChartData = {
@@ -241,7 +224,6 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
 
   return (
     <Box sx={{ fontFamily: T.sa, color: T.ink2 }}>
-      <Box ref={headerRef}>
       {/* Header */}
       <Box sx={{ bgcolor: T.cd, borderBottom: `0.5px solid ${T.br}`, px: '30px', py: '14px', display: 'flex', alignItems: 'center', gap: '16px' }}>
         <Box component="img" src="/elewana-collection-logo.png" alt="Elewana Collection" sx={{ height: 38, width: 'auto' }} />
@@ -300,7 +282,6 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
           </ButtonGroup>
           <SesAgentSearch agents={data.AD.yearly} onSelectAgent={onSelectAgent} />
         </Box>
-      </Box>
       </Box>
 
       {/* Content */}

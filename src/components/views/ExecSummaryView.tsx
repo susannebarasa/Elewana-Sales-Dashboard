@@ -139,7 +139,7 @@ export default function ExecSummaryView({ data, filters, onSelectProperty }: Pro
       <KpiRow metrics={[roomRevenueActualized, kp.occ.nights, kp.occ.occPct, kp.execPace.vsBudget]} />
 
       {/* Narrative panel (2026-07-16) — moved below the KPI row: cards first, narrative second. */}
-      <ExecutiveStoryPanel data={data} property={filters.property} />
+      <ExecutiveStoryPanel data={data} property={filters.property} period={filters.period} />
 
       <Grid container spacing={1.5} sx={{ mb: 1.5 }}>
         <Grid size={4}>

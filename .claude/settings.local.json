@@ -12,7 +12,8 @@
       "Bash(pkill -f \"next dev\")",
       "Bash(pkill -f \"npm run dev\")",
       "Bash(rm -f /tmp/finance_*.js /tmp/dev-server.log)",
-      "Bash(rm -f C:/tmp/*.png C:/tmp/dev-server2.log)"
+      "Bash(rm -f C:/tmp/*.png C:/tmp/dev-server2.log)",
+      "mcp__claude-design__write_files"
     ]
   }
 }

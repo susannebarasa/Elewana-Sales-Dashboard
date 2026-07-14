@@ -25,14 +25,20 @@ function paceDescriptor(vsBudgetPct: number): string {
   return 'running well behind plan'
 }
 
-// Sentence 1 (CONFIDENT) — Room Revenue vs Budget, YTD. Uses the exact same actual/budget pair
-// as the "Pace vs Budget %" KPI card (KP_BASE.execPace.vsBudget) and the YTD-vs-Budget mini-stat,
-// so this sentence never disagrees with a number already visible elsewhere on the page.
-function sentence1(data: DashboardData): string {
-  const actual = data.KP_BASE.pace.budgetYtd.v
-  const budget = data.KP_BASE.pace.budgetYtd.ly ?? 0
-  const pct = data.KP_BASE.execPace.vsBudget.v
-  return `Room Revenue YTD is ${fmtM(actual)} against a ${fmtM(budget)} budget (${pct.toFixed(1)}% of budget), ${paceDescriptor(pct)}.`
+// Sentence 1 (CONFIDENT) — Room Revenue vs Budget, now period-aware (2026-07-14 fix). MTD uses
+// the real MTD actual/budget pair (KP_BASE.pace.budgetMtd); YTD uses the same pair the
+// "Pace vs Budget %" KPI card (KP_BASE.execPace.vsBudget) and YTD-vs-Budget mini-stat already show.
+// Full Year reuses the YTD pair — not a fabrication: the live API has no distinct full-year budget
+// target (pace.budgetYtd/execPace.vsBudget are identical regardless of any period param), and the
+// Full Year KPI card itself already mirrors YTD's revenue for the same reason (future months
+// haven't happened yet).
+function sentence1(data: DashboardData, period: 'm' | 'y' | 'a'): string {
+  const periodWord = period === 'm' ? 'MTD' : period === 'a' ? 'Full Year' : 'YTD'
+  const metric = period === 'm' ? data.KP_BASE.pace.budgetMtd : data.KP_BASE.pace.budgetYtd
+  const actual = metric.v
+  const budget = metric.ly ?? 0
+  const pct = period === 'm' ? (budget > 0 ? (actual / budget) * 100 : 0) : data.KP_BASE.execPace.vsBudget.v
+  return `Room Revenue ${periodWord} is ${fmtM(actual)} against a ${fmtM(budget)} budget (${pct.toFixed(1)}% of budget), ${paceDescriptor(pct)}.`
 }
 
 // Sentence 2 (CONFIDENT) — Agent Pace movers only. AGENT_PACE.gainers/decliners are already
@@ -49,6 +55,6 @@ function sentence2(data: DashboardData): string {
   return `Agent Pace-wise, ${gainStr} are growing fastest while ${declineStr} are softening.`
 }
 
-export function buildExecutiveNarrative(data: DashboardData): string[] {
-  return [sentence1(data), sentence2(data)]
+export function buildExecutiveNarrative(data: DashboardData, period: 'm' | 'y' | 'a' = 'y'): string[] {
+  return [sentence1(data, period), sentence2(data)]
 }
