@@ -48,8 +48,25 @@ export interface AgentYearly {
   conversionRate: number
 }
 
+// Agent directory (2026-07-16b, Agent Leaderboard payload trim) — lightweight sibling to
+// AgentYearly, one entry per agent (ALL of them, not capped), used only by SesAgentSearch.tsx's
+// "Find Agent" so every agent stays searchable even though AgentData.yearly itself is now capped
+// to the top 150 by revenue. Just the 4 fields SesAgentSearch needs: id (onSelectAgent), nm +
+// country (its filterOptions stringify), mkt (kept for the same segment-badge convention as
+// AgentYearly, not currently rendered by SesAgentSearch but cheap to include).
+export interface AgentDirectoryItem {
+  id: string
+  nm: string
+  country: string | null
+  mkt: string
+}
+
 export interface AgentData {
+  // Top 150 by revenue (agRows is already ORDER BY rv_raw DESC) — full field set, unchanged
+  // shape from before the 2026-07-16b trim. See yearlyDirectory below for the full agent list.
   yearly: AgentYearly[]
+  // ALL agents (same population as `yearly` would have been pre-trim, ~833), minimal fields only.
+  yearlyDirectory: AgentDirectoryItem[]
   byProp: { pr: string; id: string | null; rv: number; ly: number; extras: number; extrasLy: number }[]
   byMonth: { months: string[]; act: number[]; ly: number[]; extras: number[]; extrasLy: number[] }
   occByMonth: { months: string[]; act: number[]; ly: number[] }

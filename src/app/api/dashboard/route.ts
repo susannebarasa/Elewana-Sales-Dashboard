@@ -51,26 +51,46 @@ const signedPct = (cur: number, prev: number): string => {
 const safePct = (num: number, den: number): number =>
   den > 0 ? Math.round((num / den) * 100) : 0
 
-// Short-TTL server-side cache (2026-07-15) — keyed by the exact year/period/channel/market
-// combination. This route fires 60+ queries per request; at the app's real usage pattern (most
-// loads use the default filters, repeatedly, across the day) a 3-minute TTL turns nearly all
-// repeat loads into an instant cache hit with zero DB round-trips, without touching any of the
-// underlying query logic. Module-level Map — fine for this app's single persistent Node process
-// (not a serverless/multi-instance deployment); would need a shared store (Redis etc.) if that
-// ever changes. `lastUpdated` is baked into the cached `data` at fetch time and returned as-is on
-// a hit — see todayStr below, now date+time (not just date) specifically so the Topbar's "Data as
-// at" label makes a few-minutes-stale cache visible, per the user's explicit "don't let this look
-// real-time" instruction.
-// TEMPORARY bump (2026-07-09, same-day mitigation) — cold-load latency degraded to 84-90s today
-// (was ~35s per the 2026-07-15 DB-performance investigation), long enough to hit Node's default
-// request/header timeout and truncate the response client-side ("Unexpected end of JSON input").
-// Extended from 3 to 20 minutes to survive through today's meeting without a real fix to the
-// underlying DB-side contention. Does NOT violate the original "don't let this look real-time"
-// instruction — the Topbar's "Data as at" timestamp still makes staleness visible regardless of
-// TTL length, just up to ~20 min old instead of ~3. Revert to 3 * 60 * 1000 once the real fix
-// (query optimization / proper caching layer, already flagged for Clint/CloudWatch) lands.
-const DASHBOARD_CACHE_TTL_MS = 20 * 60 * 1000
+// Server-side cache (2026-07-15, invalidation reworked 2026-07-16b) — keyed by the exact
+// view/year/period/channel/market/property combination. This route fires 60+ queries per request
+// at the top-level `all`/`exec-summary` views; at the app's real usage pattern (most loads use
+// the default filters, repeatedly, across the day) caching turns nearly all repeat loads into an
+// instant cache hit with zero DB round-trips, without touching any of the underlying query logic.
+// Module-level Map — fine for this app's single persistent Node process (not a serverless/
+// multi-instance deployment); would need a shared store (Redis etc.) if that ever changes.
+// `lastUpdated` is baked into the cached `data` at fetch time and returned as-is on a hit — see
+// todayStr below, now date+time (not just date) specifically so the Topbar's "Data as at" label
+// makes a stale cache visible, per the user's explicit "don't let this look real-time" instruction.
+//
+// THE REAL FIX (2026-07-16b): a cache hit is no longer trusted purely on elapsed time. Instead,
+// `isCacheEntryFresh` below checks sync_logs for the most recent COMPLETED reservations sync
+// (cheap — 71 rows, indexed on (sync_type, sync_status) and end_time) — if one finished AFTER
+// this entry was cached, the entry is stale regardless of age, so a hit right after a sync still
+// gets fresh data. A 6-hour max-age remains as a pure safety net (covers sync_logs being
+// unreachable/empty, or simply never having synced) — see its try/catch below, which falls back
+// to that max-age check ALONE so a sync_logs problem can never take down the whole dashboard.
+const CACHE_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000
 const dashboardCache = new Map<string, { data: DashboardData; cachedAt: number }>()
+
+// Returns true if a cache entry cached at `cachedAt` is still safe to serve. Only called on a
+// cache HIT (no point running this on a miss — the route is about to refetch anyway).
+async function isCacheEntryFresh(cachedAt: number): Promise<boolean> {
+  const age = Date.now() - cachedAt
+  if (age >= CACHE_FALLBACK_MAX_AGE_MS) return false
+  try {
+    const row = await queryOne<{ t: string | Date | null }>(
+      `SELECT MAX(end_time) AS t FROM sync_logs WHERE sync_type='reservations' AND sync_status='completed'`
+    )
+    const lastSyncMs = row?.t ? new Date(row.t).getTime() : NaN
+    if (isFinite(lastSyncMs) && lastSyncMs > cachedAt) return false
+    return true
+  } catch (err) {
+    // sync_logs unreachable/erroring — fall back to the 6h max-age check alone (already passed
+    // above, so the entry stays valid). Never let this check take down the whole route.
+    console.error('[dashboard API] sync_logs freshness check failed, falling back to max-age only', err)
+    return true
+  }
+}
 
 // Property filter (2026-07-09) — known-good propertyId set, same source of truth as
 // revparByProperty/PROPERTY_PERFORMANCE below. Excludes Little Elephant Pepper Camp (propertyId
@@ -112,7 +132,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const needed = queryIdsForView(view)
     const cacheKey = `${view}|${cy}|${period}|${channel}|${market}|${property}`
     const cached = dashboardCache.get(cacheKey)
-    if (cached && Date.now() - cached.cachedAt < DASHBOARD_CACHE_TTL_MS) {
+    if (cached && (await isCacheEntryFresh(cached.cachedAt))) {
       return NextResponse.json({
         ...cached.data,
         appliedFilters: { year: cy, period, monthRange: [monthLo, monthHi], channel, market, property, view },
@@ -2014,12 +2034,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // agentConversionRows query comments for basis details.
     const propCountMap = new Map(agentPropCountRows.map((r) => [r.agent_id, i(r.prop_count)]))
     const conversionMap = new Map(agentConversionRows.map((r) => [r.agent_id, safePct(i(r.confirmed_ct), i(r.total_ct))]))
+    // Agent Leaderboard payload trim (2026-07-16b) — agRows is already `ORDER BY rv_raw DESC`
+    // (see its query above), so the first LEADERBOARD_YEARLY_CAP rows are already the top-N by
+    // revenue; no extra query or re-sort needed. Full-field `yearly` only covers those rows now;
+    // `yearlyDirectory` below still covers every agent (all ~833), just with the 4 fields
+    // SesAgentSearch.tsx's "Find Agent" needs, so search-any-agent keeps working at a fraction of
+    // the payload size. Matches SalesExecutiveSummaryDesign.tsx's own LEADERBOARD_CAP (150).
+    const LEADERBOARD_YEARLY_CAP = 150
     const AD = {
       // FIX (2026-07-13, Channel/Market Segment): ch was hardcoded 'B2B' for every row — now a
       // real lookup against the segment mapping CSV (src/lib/agentSegments.ts), by agent name.
       // 'Unallocated' surfaces as-is (not hidden, not guessed) when the CSV has no row or a blank
       // cell for this agent.
-      yearly: agRows.map((r) => {
+      yearly: agRows.slice(0, LEADERBOARD_YEARLY_CAP).map((r) => {
         const rv = n(r.rv_raw)
         const lyRv = agLyMap.get(r.nm) ?? 0
         const adr = i(r.adr)
@@ -2041,6 +2068,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           country: r.agent_physical_country || r.agent_postal_country || null,
           propertiesProduced: propCountMap.get(r.ag_id) ?? 0,
           conversionRate: conversionMap.get(r.ag_id) ?? 0,
+        }
+      }),
+      // Full agent directory (2026-07-16b) — ALL of agRows (not capped), minimal fields only.
+      // Powers SesAgentSearch.tsx's "Find Agent" so it can still search every agent even though
+      // `yearly` above is now capped. `mkt` kept for the same segment-badge convention as
+      // AgentYearly even though SesAgentSearch doesn't currently filter on it.
+      yearlyDirectory: agRows.map((r) => {
+        const segment = lookupAgentSegment(r.nm)
+        return {
+          id: r.ag_id,
+          nm: r.nm,
+          country: r.agent_physical_country || r.agent_postal_country || null,
+          mkt: segment.marketSegment,
         }
       }),
       byProp: (() => {

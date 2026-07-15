@@ -2,6 +2,7 @@
 import type { ReactNode } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
+import Alert from '@mui/material/Alert'
 import ButtonGroup from '@mui/material/ButtonGroup'
 import Button from '@mui/material/Button'
 import Select from '@mui/material/Select'
@@ -23,22 +24,11 @@ import { buildExecutiveNarrative } from '@/lib/execNarrative'
 import { propertyBarClickOptions } from '@/lib/chartClicks'
 import { PROPERTY_ROOM_COUNTS } from '@/lib/constants'
 import { MARKET_SEGMENT_VALUES } from '@/lib/agentSegments'
+import { T } from '@/lib/sesTheme'
 import SesAgentSearch from '@/components/SesAgentSearch'
+import { SesKpiNarrativeSkeleton, SesChartsSkeleton, SesLeaderboardSkeleton } from '@/components/SesSkeleton'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ChartTooltip)
-
-// Design tokens — lifted verbatim from the Claude Design export's :root CSS block
-// ("Elewana Sales Executive Summary.html") so this page matches pixel-for-pixel rather than
-// reusing the rest of the app's MUI theme.
-const T = {
-  bg: '#EDEEE6', cd: '#FAF6EC', sf: '#F3EFE6',
-  rg: '#3B6D11', ra: '#CA8A04', rr: '#C0392B', br: '#C9BEA9',
-  oc: '#B7632A', ocl: '#FAEEDA', ocd: '#854F0B', ly: '#A7997F', dk: '#2A2318',
-  ink: '#1F1A14', ink2: '#3A3026', mu: '#6B5F50',
-  se: '"Cormorant Garamond", Georgia, serif',
-  sa: 'Inter, system-ui, sans-serif',
-  mo: '"JetBrains Mono", monospace',
-}
 
 const PROPERTY_OPTIONS = [
   { value: 'all', label: 'All Properties' },
@@ -57,8 +47,21 @@ const PERIOD_OPTIONS: { value: SesFilters['period']; label: string }[] = [
   { value: 'a', label: 'Full Year' },
 ]
 
+// Progressive-loading prop contract (2026-07-16c) — this page's backend is split into 3
+// independent /api/dashboard views (kpis / charts / leaderboard, see src/lib/dashboardViews.ts),
+// each resolving at its own pace. Rather than one `data: DashboardData`, each section gets its own
+// data/loading/error trio so it can independently swap skeleton -> real content -> error without
+// waiting on (or being blocked by) the other two.
 type Props = {
-  data: DashboardData
+  kpisData: DashboardData | null
+  kpisLoading: boolean
+  kpisError: string | null
+  chartsData: DashboardData | null
+  chartsLoading: boolean
+  chartsError: string | null
+  leaderboardData: DashboardData | null
+  leaderboardLoading: boolean
+  leaderboardError: string | null
   filters: SesFilters
   onFilters: (f: SesFilters) => void
   onSelectAgent: (agentId: string) => void
@@ -178,53 +181,66 @@ const selSx = {
   '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: T.oc },
 }
 
-export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, onSelectAgent, onSelectProperty }: Props) {
-  const kp = data.KP_BASE
+export default function SalesExecutiveSummaryDesign({
+  kpisData, kpisLoading, kpisError,
+  chartsData, chartsLoading, chartsError,
+  leaderboardData, leaderboardLoading, leaderboardError,
+  filters, onFilters, onSelectAgent, onSelectProperty,
+}: Props) {
   const propertyLabel = filters.property === 'all'
     ? 'All Properties'
     : PROPERTY_OPTIONS.find((p) => p.value === filters.property)?.label ?? filters.property
   const periodLabel = filters.period === 'm' ? `Month to date · ${filters.year}` : filters.period === 'y' ? `Year to date · ${filters.year}` : `Full year · ${filters.year}`
 
-  // Room Revenue label override — same "Actualized, not full-year" honesty note as
-  // src/components/views/ExecSummaryView.tsx's roomRevenueActualized (occ.rev is
-  // actualized-stays-only; Agent Room Revenue elsewhere includes forward-confirmed bookings).
-  const roomRevenue = kp.occ.rev
+  // "Data as at" — whichever section resolves first (they all share the same server clock at
+  // request time, so once more than one has landed they read identically; never crashes if the
+  // others are still in flight).
+  const lastUpdated = kpisData?.lastUpdated ?? chartsData?.lastUpdated ?? leaderboardData?.lastUpdated ?? null
 
-  const narrative = buildExecutiveNarrative(data, filters.period)
-  const [headline, ...body] = narrative
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let paceChartData: any = null
+  let byPropItems: ({ nm: string; id: string | null } | { pr: string; id: string | null })[] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let byPropData: any = null
+  let segmentActive = false
 
-  const paceChartData = {
-    labels: data.PD.months,
-    datasets: [
-      { label: filters.year, data: data.PD.actual, borderColor: T.oc, backgroundColor: 'rgba(183,99,42,0.1)', borderWidth: 2.5, tension: 0.35, pointRadius: 3, pointBackgroundColor: T.oc },
-      { label: 'Last year', data: data.PD.ly, borderColor: T.ly, borderDash: [5, 4], fill: false, tension: 0.35, borderWidth: 2, pointRadius: 2, pointBackgroundColor: T.ly },
-    ],
+  if (chartsData) {
+    paceChartData = {
+      labels: chartsData.PD.months,
+      datasets: [
+        { label: filters.year, data: chartsData.PD.actual, borderColor: T.oc, backgroundColor: 'rgba(183,99,42,0.1)', borderWidth: 2.5, tension: 0.35, pointRadius: 3, pointBackgroundColor: T.oc },
+        { label: 'Last year', data: chartsData.PD.ly, borderColor: T.ly, borderDash: [5, 4], fill: false, tension: 0.35, borderWidth: 2, pointRadius: 2, pointBackgroundColor: T.ly },
+      ],
+    }
+
+    // By-Property chart — occupancy ranking when no Segment is selected (matches
+    // ExecSummaryView's OD.props), Segment-scoped revenue by property when one is (matches
+    // AgentsView's AD.byProp, which /api/dashboard already filters server-side by the Segment
+    // ('market') param — no client-side re-filtering needed here).
+    segmentActive = filters.market !== 'all'
+    const selectedPropertyId = filters.property !== 'all' ? filters.property : null
+    byPropItems = segmentActive ? chartsData.AD.byProp.slice(0, 10) : chartsData.OD.props
+    byPropData = segmentActive
+      ? {
+          labels: byPropItems.map((p) => ('pr' in p ? p.pr : p.nm)),
+          datasets: [{ data: chartsData.AD.byProp.slice(0, 10).map((p) => p.rv), backgroundColor: T.oc, borderRadius: 3 }],
+        }
+      : {
+          labels: chartsData.OD.props.map((p) => p.nm),
+          datasets: [{
+            data: chartsData.OD.props.map((p) => p.oc),
+            backgroundColor: chartsData.OD.props.map((p) => (selectedPropertyId && p.id === selectedPropertyId ? T.oc : 'rgba(183,99,42,0.55)')),
+            borderRadius: 3,
+          }],
+        }
   }
 
-  // By-Property chart — occupancy ranking when no Segment is selected (matches
-  // ExecSummaryView's OD.props), Segment-scoped revenue by property when one is (matches
-  // AgentsView's AD.byProp, which /api/dashboard already filters server-side by the Segment
-  // ('market') param — no client-side re-filtering needed here).
-  const segmentActive = filters.market !== 'all'
-  const selectedPropertyId = filters.property !== 'all' ? filters.property : null
-  const byPropItems = segmentActive ? data.AD.byProp.slice(0, 10) : data.OD.props
-  const byPropData = segmentActive
-    ? {
-        labels: byPropItems.map((p) => ('pr' in p ? p.pr : p.nm)),
-        datasets: [{ data: data.AD.byProp.slice(0, 10).map((p) => p.rv), backgroundColor: T.oc, borderRadius: 3 }],
-      }
-    : {
-        labels: data.OD.props.map((p) => p.nm),
-        datasets: [{
-          data: data.OD.props.map((p) => p.oc),
-          backgroundColor: data.OD.props.map((p) => (selectedPropertyId && p.id === selectedPropertyId ? T.oc : 'rgba(183,99,42,0.55)')),
-          borderRadius: 3,
-        }],
-      }
+  const narrative = kpisData ? buildExecutiveNarrative(kpisData, filters.period) : null
+  const [headline, ...body] = narrative ?? []
 
   return (
     <Box sx={{ fontFamily: T.sa, color: T.ink2 }}>
-      {/* Header */}
+      {/* Header — always visible, no data dependency other than the "Data as at" timestamp */}
       <Box sx={{ bgcolor: T.cd, borderBottom: `0.5px solid ${T.br}`, px: '30px', py: '14px', display: 'flex', alignItems: 'center', gap: '16px' }}>
         <Box component="img" src="/elewana-collection-logo.png" alt="Elewana Collection" sx={{ height: 38, width: 'auto' }} />
         <Box>
@@ -238,11 +254,12 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
         <Box sx={{ flex: 1 }} />
         <Box sx={{ textAlign: 'right' }}>
           <Typography sx={{ fontSize: 8, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.mu, mb: '3px' }}>Data as at</Typography>
-          <Typography sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2 }}>{data.lastUpdated}</Typography>
+          <Typography sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2 }}>{lastUpdated ?? '—'}</Typography>
         </Box>
       </Box>
 
-      {/* Sub bar: tab + filters */}
+      {/* Sub bar: tab + filters — always visible; Find Agent tolerates the leaderboard section
+          still loading (empty options + disabled, see SesAgentSearch's `loading` prop) */}
       <Box sx={{ bgcolor: T.cd, borderBottom: `0.5px solid ${T.br}`, px: '30px', py: '11px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
         <Box sx={{ fontFamily: T.sa, fontSize: 12, fontWeight: 600, px: '16px', py: '7px', borderRadius: '20px', bgcolor: T.ink, color: T.cd }}>
           Sales Executive Summary
@@ -280,7 +297,7 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
               </Button>
             ))}
           </ButtonGroup>
-          <SesAgentSearch agents={data.AD.yearly} onSelectAgent={onSelectAgent} />
+          <SesAgentSearch agents={leaderboardData?.AD.yearlyDirectory ?? []} onSelectAgent={onSelectAgent} loading={leaderboardLoading} />
         </Box>
       </Box>
 
@@ -298,138 +315,161 @@ export default function SalesExecutiveSummaryDesign({ data, filters, onFilters, 
           <Typography sx={{ fontSize: 11, color: T.mu }}>{periodLabel}</Typography>
         </Box>
 
-        {/* KPI row — exactly 4 */}
-        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', mb: '16px' }}>
-          <KpiCard label="Room Revenue (Actualized)" metric={roomRevenue} caption="vs last year" />
-          <KpiCard label="Room Nights Sold" metric={kp.occ.nights} caption="vs last year" />
-          {/* caption reads "vs Budget", not "vs last year" — Occupancy % has no real prior-year
-              capacity query to compare against (see ragFromYoyPct's comment above), but as of
-              2026-07-16 kp.occ.occPct.ly now carries a real Budget Occupancy % target instead
-              (budgetRns ÷ available room nights, same derivation as the Actual side), so this
-              card's badge is a genuine Budget variance, not a fabricated YoY one. */}
-          <KpiCard label="Occupancy %" metric={kp.occ.occPct} caption="vs Budget" />
-          <KpiCard label="ADR" metric={kp.occ.adr} caption="vs last year" />
-        </Box>
+        {/* KPI row + Narrative panel — kpis section */}
+        {kpisError && <Alert severity="error" sx={{ mb: '16px' }}>Failed to load KPIs: {kpisError}</Alert>}
+        {!kpisError && (kpisLoading || !kpisData) && <SesKpiNarrativeSkeleton />}
+        {!kpisError && !kpisLoading && kpisData && (
+          <>
+            {/* Room Revenue label override — same "Actualized, not full-year" honesty note as
+                src/components/views/ExecSummaryView.tsx's roomRevenueActualized (occ.rev is
+                actualized-stays-only; Agent Room Revenue elsewhere includes forward-confirmed
+                bookings). */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', mb: '16px' }}>
+              <KpiCard label="Room Revenue (Actualized)" metric={kpisData.KP_BASE.occ.rev} caption="vs last year" />
+              <KpiCard label="Room Nights Sold" metric={kpisData.KP_BASE.occ.nights} caption="vs last year" />
+              {/* caption reads "vs Budget", not "vs last year" — Occupancy % has no real prior-year
+                  capacity query to compare against (see ragFromYoyPct's comment above), but as of
+                  2026-07-16 kp.occ.occPct.ly now carries a real Budget Occupancy % target instead
+                  (budgetRns ÷ available room nights, same derivation as the Actual side), so this
+                  card's badge is a genuine Budget variance, not a fabricated YoY one. */}
+              <KpiCard label="Occupancy %" metric={kpisData.KP_BASE.occ.occPct} caption="vs Budget" />
+              <KpiCard label="ADR" metric={kpisData.KP_BASE.occ.adr} caption="vs last year" />
+            </Box>
 
-        {/* Narrative panel */}
-        <Box sx={{ bgcolor: T.dk, borderRadius: '10px', p: '20px 24px', mb: '16px', display: 'grid', gridTemplateColumns: '1fr 210px', gap: '26px' }}>
-          <Box>
-            <Typography sx={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.22em', textTransform: 'uppercase', color: T.ra, mb: '9px' }}>
-              Executive Summary
-            </Typography>
-            {headline && (
-              <Typography sx={{ fontFamily: T.se, fontSize: 22, fontWeight: 600, color: '#F5EDD8', mb: '11px', lineHeight: 1.24, letterSpacing: '-0.005em' }}>
-                {headline}
-              </Typography>
-            )}
-            <Typography sx={{ fontSize: 13, color: '#A89880', lineHeight: 1.72 }}>{body.join(' ')}</Typography>
-          </Box>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: '9px', borderLeft: '0.5px solid rgba(210,190,160,0.22)', pl: '22px' }}>
-            <NarrativePill value={fmtK(kp.occ.revpar.v, kp.occ.revpar.fmt)} label="RevPAR" sub="occ × ADR" />
-            <NarrativePill
-              value={fmtK(kp.pace.budgetMtd.v, kp.pace.budgetMtd.fmt)}
-              label="MTD vs Budget"
-              sub={budgetVariance(kp.pace.budgetMtd)?.text}
-              color={budgetVariance(kp.pace.budgetMtd)?.positive ? '#8FCB7A' : '#E58A7C'}
-            />
-            <NarrativePill
-              value={fmtK(kp.pace.budgetYtd.v, kp.pace.budgetYtd.fmt)}
-              label="YTD vs Budget"
-              sub={budgetVariance(kp.pace.budgetYtd)?.text}
-              color={budgetVariance(kp.pace.budgetYtd)?.positive ? '#8FCB7A' : '#E58A7C'}
-            />
-          </Box>
-        </Box>
-
-        {/* Charts */}
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', mb: '16px' }}>
-          <ChartCard
-            title="Monthly Revenue Trend — 2026 vs LY"
-            sub={`Monthly confirmed Room Revenue, this year vs last`}
-            legend={<ChartLegend items={[{ label: filters.year, color: T.oc }, { label: 'Last Year', color: T.ly, dashed: true }]} />}
-          >
-            <Line
-              data={paceChartData}
-              options={{
-                ...CHART_OPTS,
-                scales: {
-                  ...CHART_OPTS.scales,
-                  y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, callback: (v: number | string) => `$${v}k` } },
-                },
-              }}
-            />
-          </ChartCard>
-          <ChartCard
-            title="By Property"
-            sub={segmentActive ? `${filters.market} revenue by property ($k) · this period` : 'Relative occupancy · trailing 90 days'}
-            height={Math.max(230, byPropItems.length * 22 + 26)}
-          >
-            <Bar
-              data={byPropData}
-              options={{
-                ...CHART_OPTS, indexAxis: 'y' as const,
-                scales: {
-                  ...CHART_OPTS.scales,
-                  y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, autoSkip: false, crossAlign: 'far' as const } },
-                },
-                ...propertyBarClickOptions(byPropItems as unknown as { id: string | null }[], onSelectProperty, 'sales-exec-summary'),
-              }}
-            />
-          </ChartCard>
-        </Box>
-
-        {/* Agent Leaderboard — capped + scrollable with a sticky header (2026-07-16 design edit,
-            necessary once real data brought this to 819 agents instead of the mockup's 16). */}
-        <Box sx={{ bgcolor: T.cd, border: `0.5px solid ${T.br}`, borderRadius: '9px', p: '16px 18px' }}>
-          <Typography sx={{ fontFamily: T.se, fontSize: 18, fontWeight: 500, color: T.ink, mb: '2px' }}>Agent Leaderboard</Typography>
-          <Typography sx={{ fontSize: 10, color: T.mu, mb: '12px', fontStyle: 'italic' }}>
-            {data.AD.yearly.length > LEADERBOARD_CAP
-              ? `Top ${LEADERBOARD_CAP} of ${data.AD.yearly.length} agents`
-              : `${data.AD.yearly.length} agent${data.AD.yearly.length === 1 ? '' : 's'}`}
-            {' '}· click any row for a full profile
-          </Typography>
-          <Box sx={{ maxHeight: 430, overflow: 'auto' }}>
-            <Table size="small" stickyHeader>
-              <TableHead>
-                <TableRow>
-                  <TableCell sx={{ textAlign: 'left', fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Agent</TableCell>
-                  <TableCell sx={{ textAlign: 'left', fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Segment</TableCell>
-                  <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Room Revenue</TableCell>
-                  <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Nights</TableCell>
-                  <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>ADR</TableCell>
-                  <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Materialisation</TableCell>
-                  <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>YoY</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {data.AD.yearly.slice(0, LEADERBOARD_CAP).map((r) => (
-                  <TableRow
-                    key={r.id}
-                    onClick={() => onSelectAgent(r.id)}
-                    sx={{ cursor: 'pointer', '&:hover td': { bgcolor: T.sf }, '&:last-child td': { border: 0 } }}
-                  >
-                    <TableCell sx={{ fontFamily: T.sa, fontSize: 12.5, fontWeight: 500, color: T.ink, borderBottom: `0.5px solid ${T.br}`, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {r.nm}
-                    </TableCell>
-                    <TableCell sx={{ borderBottom: `0.5px solid ${T.br}`, maxWidth: 170 }}>
-                      <Box sx={{ display: 'inline-block', fontFamily: T.mo, fontSize: 9.5, px: '9px', py: '2px', borderRadius: '20px', bgcolor: r.mkt === 'Unallocated' ? T.sf : T.ocl, color: r.mkt === 'Unallocated' ? T.mu : T.ocd }}>
-                        {r.mkt}
-                      </Box>
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>${r.rv.toLocaleString()}k</TableCell>
-                    <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>{r.nt.toLocaleString()}</TableCell>
-                    <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>${r.nr_adr.toLocaleString()}</TableCell>
-                    <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>{r.conversionRate.toFixed(1)}%</TableCell>
-                    <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, fontWeight: 600, color: r.up ? T.rg : T.rr, borderBottom: `0.5px solid ${T.br}` }}>{r.cg}</TableCell>
-                  </TableRow>
-                ))}
-                {data.AD.yearly.length === 0 && (
-                  <TableRow><TableCell colSpan={7} align="center" sx={{ color: T.mu, fontStyle: 'italic', border: 0, py: 4 }}>No agents match these filters.</TableCell></TableRow>
+            <Box sx={{ bgcolor: T.dk, borderRadius: '10px', p: '20px 24px', mb: '16px', display: 'grid', gridTemplateColumns: '1fr 210px', gap: '26px' }}>
+              <Box>
+                <Typography sx={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.22em', textTransform: 'uppercase', color: T.ra, mb: '9px' }}>
+                  Executive Summary
+                </Typography>
+                {headline && (
+                  <Typography sx={{ fontFamily: T.se, fontSize: 22, fontWeight: 600, color: '#F5EDD8', mb: '11px', lineHeight: 1.24, letterSpacing: '-0.005em' }}>
+                    {headline}
+                  </Typography>
                 )}
-              </TableBody>
-            </Table>
+                <Typography sx={{ fontSize: 13, color: '#A89880', lineHeight: 1.72 }}>{body.join(' ')}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: '9px', borderLeft: '0.5px solid rgba(210,190,160,0.22)', pl: '22px' }}>
+                <NarrativePill value={fmtK(kpisData.KP_BASE.occ.revpar.v, kpisData.KP_BASE.occ.revpar.fmt)} label="RevPAR" sub="occ × ADR" />
+                <NarrativePill
+                  value={fmtK(kpisData.KP_BASE.pace.budgetMtd.v, kpisData.KP_BASE.pace.budgetMtd.fmt)}
+                  label="MTD vs Budget"
+                  sub={budgetVariance(kpisData.KP_BASE.pace.budgetMtd)?.text}
+                  color={budgetVariance(kpisData.KP_BASE.pace.budgetMtd)?.positive ? '#8FCB7A' : '#E58A7C'}
+                />
+                <NarrativePill
+                  value={fmtK(kpisData.KP_BASE.pace.budgetYtd.v, kpisData.KP_BASE.pace.budgetYtd.fmt)}
+                  label="YTD vs Budget"
+                  sub={budgetVariance(kpisData.KP_BASE.pace.budgetYtd)?.text}
+                  color={budgetVariance(kpisData.KP_BASE.pace.budgetYtd)?.positive ? '#8FCB7A' : '#E58A7C'}
+                />
+              </Box>
+            </Box>
+          </>
+        )}
+
+        {/* Charts — charts section */}
+        {chartsError && <Alert severity="error" sx={{ mb: '16px' }}>Failed to load charts: {chartsError}</Alert>}
+        {!chartsError && (chartsLoading || !chartsData) && <SesChartsSkeleton />}
+        {!chartsError && !chartsLoading && chartsData && paceChartData && byPropData && (
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', mb: '16px' }}>
+            <ChartCard
+              title="Monthly Revenue Trend — 2026 vs LY"
+              sub={`Monthly confirmed Room Revenue, this year vs last`}
+              legend={<ChartLegend items={[{ label: filters.year, color: T.oc }, { label: 'Last Year', color: T.ly, dashed: true }]} />}
+            >
+              <Line
+                data={paceChartData}
+                options={{
+                  ...CHART_OPTS,
+                  scales: {
+                    ...CHART_OPTS.scales,
+                    y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, callback: (v: number | string) => `$${v}k` } },
+                  },
+                }}
+              />
+            </ChartCard>
+            <ChartCard
+              title="By Property"
+              sub={segmentActive ? `${filters.market} revenue by property ($k) · this period` : 'Relative occupancy · trailing 90 days'}
+              height={Math.max(230, byPropItems.length * 22 + 26)}
+            >
+              <Bar
+                data={byPropData}
+                options={{
+                  ...CHART_OPTS, indexAxis: 'y' as const,
+                  scales: {
+                    ...CHART_OPTS.scales,
+                    y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, autoSkip: false, crossAlign: 'far' as const } },
+                  },
+                  ...propertyBarClickOptions(byPropItems as unknown as { id: string | null }[], onSelectProperty, 'sales-exec-summary'),
+                }}
+              />
+            </ChartCard>
           </Box>
-        </Box>
+        )}
+
+        {/* Agent Leaderboard — leaderboard section. Capped + scrollable with a sticky header
+            (2026-07-16 design edit, necessary once real data brought this to 819 agents instead
+            of the mockup's 16). */}
+        {leaderboardError && <Alert severity="error">Failed to load Agent Leaderboard: {leaderboardError}</Alert>}
+        {!leaderboardError && (leaderboardLoading || !leaderboardData) && <SesLeaderboardSkeleton />}
+        {!leaderboardError && !leaderboardLoading && leaderboardData && (
+          <Box sx={{ bgcolor: T.cd, border: `0.5px solid ${T.br}`, borderRadius: '9px', p: '16px 18px' }}>
+            <Typography sx={{ fontFamily: T.se, fontSize: 18, fontWeight: 500, color: T.ink, mb: '2px' }}>Agent Leaderboard</Typography>
+            <Typography sx={{ fontSize: 10, color: T.mu, mb: '12px', fontStyle: 'italic' }}>
+              {/* Total count now comes from yearlyDirectory (the full, uncapped agent list) since
+                  data.AD.yearly itself is pre-limited server-side to LEADERBOARD_CAP — see the
+                  2026-07-16b Agent Leaderboard payload trim. */}
+              {leaderboardData.AD.yearlyDirectory.length > LEADERBOARD_CAP
+                ? `Top ${LEADERBOARD_CAP} of ${leaderboardData.AD.yearlyDirectory.length} agents`
+                : `${leaderboardData.AD.yearlyDirectory.length} agent${leaderboardData.AD.yearlyDirectory.length === 1 ? '' : 's'}`}
+              {' '}· click any row for a full profile
+            </Typography>
+            <Box sx={{ maxHeight: 430, overflow: 'auto' }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ textAlign: 'left', fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Agent</TableCell>
+                    <TableCell sx={{ textAlign: 'left', fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Segment</TableCell>
+                    <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Room Revenue</TableCell>
+                    <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Nights</TableCell>
+                    <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>ADR</TableCell>
+                    <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>Materialisation</TableCell>
+                    <TableCell align="right" sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.mu, borderBottom: `0.5px solid ${T.ink}`, bgcolor: T.cd }}>YoY</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {/* data.AD.yearly is already capped to LEADERBOARD_CAP server-side (2026-07-16b) —
+                      no client-side slice needed anymore. */}
+                  {leaderboardData.AD.yearly.map((r) => (
+                    <TableRow
+                      key={r.id}
+                      onClick={() => onSelectAgent(r.id)}
+                      sx={{ cursor: 'pointer', '&:hover td': { bgcolor: T.sf }, '&:last-child td': { border: 0 } }}
+                    >
+                      <TableCell sx={{ fontFamily: T.sa, fontSize: 12.5, fontWeight: 500, color: T.ink, borderBottom: `0.5px solid ${T.br}`, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.nm}
+                      </TableCell>
+                      <TableCell sx={{ borderBottom: `0.5px solid ${T.br}`, maxWidth: 170 }}>
+                        <Box sx={{ display: 'inline-block', fontFamily: T.mo, fontSize: 9.5, px: '9px', py: '2px', borderRadius: '20px', bgcolor: r.mkt === 'Unallocated' ? T.sf : T.ocl, color: r.mkt === 'Unallocated' ? T.mu : T.ocd }}>
+                          {r.mkt}
+                        </Box>
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>${r.rv.toLocaleString()}k</TableCell>
+                      <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>{r.nt.toLocaleString()}</TableCell>
+                      <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>${r.nr_adr.toLocaleString()}</TableCell>
+                      <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, color: T.ink2, borderBottom: `0.5px solid ${T.br}` }}>{r.conversionRate.toFixed(1)}%</TableCell>
+                      <TableCell align="right" sx={{ fontFamily: T.mo, fontSize: 11, fontWeight: 600, color: r.up ? T.rg : T.rr, borderBottom: `0.5px solid ${T.br}` }}>{r.cg}</TableCell>
+                    </TableRow>
+                  ))}
+                  {leaderboardData.AD.yearly.length === 0 && (
+                    <TableRow><TableCell colSpan={7} align="center" sx={{ color: T.mu, fontStyle: 'italic', border: 0, py: 4 }}>No agents match these filters.</TableCell></TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </Box>
+          </Box>
+        )}
       </Box>
     </Box>
   )

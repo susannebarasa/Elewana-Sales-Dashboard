@@ -13,6 +13,9 @@
 export const DASHBOARD_VIEWS = [
   'exec-summary',
   'sales-exec-summary',
+  'sales-exec-summary-kpis',
+  'sales-exec-summary-charts',
+  'sales-exec-summary-leaderboard',
   'property-performance',
   'market-segment-performance',
   'booking-status-movement',
@@ -274,6 +277,50 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     'agentPropCountRows',
     'agentConversionRows',
   ],
+  // Sales Executive Summary progressive-load split (2026-07-16b) — the page is moving to 3
+  // parallel fetches so sections render as they arrive, fastest first. Each view's ID list was
+  // derived by tracing, in route.ts, exactly which query-result variables feed the DashboardData
+  // fields SalesExecutiveSummaryDesign.tsx and execNarrative.ts actually read (grepped both files
+  // line by line — not copied from 'sales-exec-summary' above, which is intentionally broader).
+  // Notably: FORECAST, top-level REVPAR, and CANCEL_DRIVERS are read by NEITHER file (kp.occ.revpar
+  // is a KP_BASE field, not top-level REVPAR.byProperty) — their underlying queries are excluded
+  // from all 3 views below even though 'sales-exec-summary' (unsplit) still fetches them for
+  // parity with 'exec-summary'. LOW_SEASON_AGENTS is likewise unread here (only AgentsView.tsx's
+  // 'tp' view reads it) — excluded from every new view's IDs and DATA_KEYS.
+  'sales-exec-summary-kpis': [
+    // KP_BASE.occ.rev/nights/adr (+ YoY ly counterparts)
+    'kpiRevNights',
+    'kpiRevNightsLy',
+    // KP_BASE.occ.revpar/occPct (portfolio-aggregate RevPAR/Occ%, actual + budget-target side)
+    'budgetActualByPropRows',
+    'revparNightsRows',
+    // KP_BASE.pace.budgetMtd/budgetYtd + KP_BASE.execPace.vsBudget (also sentence1 of the
+    // narrative, which reads these same two fields)
+    'kpiBudgetActual',
+    // AGENT_PACE.gainers/decliners — sentence2 of the narrative (execNarrative.ts)
+    'agentPaceRows',
+  ],
+  'sales-exec-summary-charts': [
+    // PD (Monthly Revenue Trend line chart)
+    'pdRows',
+    // OD.props (By Property bar chart when no Market Segment is selected) — OD.arr is built from
+    // arrRows/dayUseArrRows but this page never reads data.OD.arr, so those two are excluded.
+    'ocPropRows',
+    // AD.byProp (By Property bar chart when a Market Segment IS selected) — AD.yearly's own
+    // dependencies (agRows/agLyRows/etc.) are NOT needed here, only agPropRows/dayUsePropRows.
+    'agPropRows',
+    'dayUsePropRows',
+  ],
+  'sales-exec-summary-leaderboard': [
+    // AD.yearly (+ new AD.yearlyDirectory, see Task 2) — agRows is the base row set,
+    // agLyRows/dayUseAgentRows/agentPropCountRows/agentConversionRows are the per-agent Maps
+    // merged into each row (LY revenue, Day Use extras, Properties Produced, Conversion Rate).
+    'agRows',
+    'agLyRows',
+    'dayUseAgentRows',
+    'agentPropCountRows',
+    'agentConversionRows',
+  ],
   cn: ['cdRows', 'cdLyRows', 'kpiConsult', 'kpiConsultLy', 'kpiAgentRev', 'kpiAgentRevLy'],
   'property-performance': [
     'budgetActualByPropRows',
@@ -315,6 +362,16 @@ export const VIEW_DATA_KEYS: Record<Exclude<DashboardView, 'all'>, readonly stri
   'sales-exec-summary': [
     'PD', 'OD', 'KP_BASE', 'REVPAR', 'FORECAST', 'AGENT_PACE', 'CANCEL_DRIVERS', 'AD', 'LOW_SEASON_AGENTS', 'lastUpdated',
   ],
+  // KP_BASE feeds the 4 KPI cards + narrative panel; AGENT_PACE feeds narrative sentence2 only
+  // (execNarrative.ts) — REVPAR/FORECAST/CANCEL_DRIVERS/LOW_SEASON_AGENTS are genuinely unread,
+  // see the VIEW_QUERY_IDS comment above.
+  'sales-exec-summary-kpis': ['KP_BASE', 'AGENT_PACE', 'lastUpdated'],
+  // PD feeds the Monthly Revenue Trend chart; OD/AD together feed the By Property chart
+  // (OD.props when no Segment selected, AD.byProp when one is).
+  'sales-exec-summary-charts': ['PD', 'OD', 'AD', 'lastUpdated'],
+  // AD only — AD.yearly (capped 150) + AD.yearlyDirectory (all agents, light fields) feed the
+  // Agent Leaderboard table and the Find Agent search respectively (see Task 2).
+  'sales-exec-summary-leaderboard': ['AD', 'lastUpdated'],
   pl: ['PLF', 'YTD_ARR', 'PLT', 'KP_BASE', 'lastUpdated'],
   cn: ['CD', 'KP_BASE', 'lastUpdated'],
   'property-performance': ['PROPERTY_PERFORMANCE', 'KP_BASE', 'lastUpdated'],

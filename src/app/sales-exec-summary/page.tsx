@@ -1,8 +1,6 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Box from '@mui/material/Box'
-import Alert from '@mui/material/Alert'
-import DashboardSkeleton from '@/components/DashboardSkeleton'
 import type { DashboardData, EntityClickContext } from '@/types'
 import SalesExecutiveSummaryDesign from '@/components/views/SalesExecutiveSummaryDesign'
 import SalesExecAgentPanel from '@/components/SalesExecAgentPanel'
@@ -11,6 +9,26 @@ import PropertyProfilePanel from '@/components/PropertyProfilePanel'
 export interface SesFilters { period: 'm' | 'y' | 'a'; year: string; market: string; property: string }
 
 const CY = String(new Date().getFullYear())
+
+// Progressive-loading split (2026-07-16c) — the backend now serves this page as 3 independent
+// views on /api/dashboard (?view=sales-exec-summary-kpis / -charts / -leaderboard), each returning
+// only the DashboardData slice it actually queries (see src/lib/dashboardViews.ts's
+// VIEW_DATA_KEYS). Rather than waiting for all 3 and rendering once (the old single-fetch flow),
+// each section fetches, caches, and renders independently so KPIs/narrative can appear as soon as
+// the fastest query resolves without blocking on the slower Agent Leaderboard query (~833 agents).
+type SesSection = 'kpis' | 'charts' | 'leaderboard'
+const SECTION_VIEW: Record<SesSection, string> = {
+  kpis: 'sales-exec-summary-kpis',
+  charts: 'sales-exec-summary-charts',
+  leaderboard: 'sales-exec-summary-leaderboard',
+}
+
+interface SectionState {
+  data: DashboardData | null
+  loading: boolean
+  error: string | null
+}
+const INITIAL_SECTION_STATE: SectionState = { data: null, loading: true, error: null }
 
 // Sales Executive Summary — standalone single-tab dashboard (2026-07-16), ported from the Claude
 // Design "Elewana Sales Executive Summary" export. Deliberately a SEPARATE Next.js route, not a
@@ -23,50 +41,63 @@ const CY = String(new Date().getFullYear())
 // No Channel filter — dropped per explicit instruction; this page maps only to Segment.
 export default function SalesExecutiveSummaryPage() {
   const [filters, setFilters] = useState<SesFilters>({ period: 'y', year: CY, market: 'all', property: 'all' })
-  const [data, setData] = useState<DashboardData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [kpis, setKpis] = useState<SectionState>(INITIAL_SECTION_STATE)
+  const [charts, setCharts] = useState<SectionState>(INITIAL_SECTION_STATE)
+  const [leaderboard, setLeaderboard] = useState<SectionState>(INITIAL_SECTION_STATE)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null)
+  // Cache keyed by `${section}|${filterCacheKey}` — extends the previous single-section cacheRef
+  // pattern to 3 sections sharing one Map, so switching back to a previously-seen filter combo
+  // still skips the network for every section independently.
   const cacheRef = useRef<Map<string, DashboardData>>(new Map())
 
   useEffect(() => {
-    const cacheKey = `${filters.year}|${filters.period}|${filters.market}|${filters.property}`
-    const cached = cacheRef.current.get(cacheKey)
-    if (cached) {
-      setData(cached)
-      setLoading(false)
-      setError(null)
-      return
-    }
-
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    const params = new URLSearchParams({
+    const filterKey = `${filters.year}|${filters.period}|${filters.market}|${filters.property}`
+    // Built once per filter change, cloned per section below (only `view` differs) — guarantees
+    // all 3 requests carry identical year/period/channel/market/property, so the 3 sections can
+    // never desync on filters even though they resolve at different times.
+    const baseParams = new URLSearchParams({
       year: filters.year,
       period: filters.period,
       channel: 'all',
       market: filters.market,
       property: filters.property,
-      view: 'sales-exec-summary',
     })
-    fetch(`/api/dashboard?${params.toString()}`)
-      .then((r) => {
-        if (!r.ok) return r.json().then((e) => Promise.reject(e.error ?? 'Server error'))
-        return r.json()
-      })
-      .then((d: DashboardData) => {
-        if (cancelled) return
-        cacheRef.current.set(cacheKey, d)
-        setData(d)
-        setLoading(false)
-      })
-      .catch((e) => {
-        if (cancelled) return
-        setError(String(e))
-        setLoading(false)
-      })
+
+    let cancelled = false
+    const setters: Record<SesSection, (s: SectionState) => void> = {
+      kpis: setKpis,
+      charts: setCharts,
+      leaderboard: setLeaderboard,
+    }
+
+    ;(['kpis', 'charts', 'leaderboard'] as SesSection[]).forEach((section) => {
+      const cacheKey = `${section}|${filterKey}`
+      const cached = cacheRef.current.get(cacheKey)
+      if (cached) {
+        setters[section]({ data: cached, loading: false, error: null })
+        return
+      }
+
+      setters[section]({ data: null, loading: true, error: null })
+      const params = new URLSearchParams(baseParams)
+      params.set('view', SECTION_VIEW[section])
+      fetch(`/api/dashboard?${params.toString()}`)
+        .then((r) => {
+          if (!r.ok) return r.json().then((e) => Promise.reject(e.error ?? 'Server error'))
+          return r.json()
+        })
+        .then((d: DashboardData) => {
+          if (cancelled) return
+          cacheRef.current.set(cacheKey, d)
+          setters[section]({ data: d, loading: false, error: null })
+        })
+        .catch((e) => {
+          if (cancelled) return
+          setters[section]({ data: null, loading: false, error: String(e) })
+        })
+    })
+
     return () => { cancelled = true }
   }, [filters.year, filters.period, filters.market, filters.property])
 
@@ -76,17 +107,21 @@ export default function SalesExecutiveSummaryPage() {
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#EDEEE6' }}>
-      {loading && <DashboardSkeleton />}
-      {error && <Alert severity="error" sx={{ m: 3 }}>Failed to load dashboard data: {error}</Alert>}
-      {!loading && !error && data && (
-        <SalesExecutiveSummaryDesign
-          data={data}
-          filters={filters}
-          onFilters={setFilters}
-          onSelectAgent={setSelectedAgentId}
-          onSelectProperty={handleSelectProperty}
-        />
-      )}
+      <SalesExecutiveSummaryDesign
+        kpisData={kpis.data}
+        kpisLoading={kpis.loading}
+        kpisError={kpis.error}
+        chartsData={charts.data}
+        chartsLoading={charts.loading}
+        chartsError={charts.error}
+        leaderboardData={leaderboard.data}
+        leaderboardLoading={leaderboard.loading}
+        leaderboardError={leaderboard.error}
+        filters={filters}
+        onFilters={setFilters}
+        onSelectAgent={setSelectedAgentId}
+        onSelectProperty={handleSelectProperty}
+      />
       <SalesExecAgentPanel agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />
       <PropertyProfilePanel propertyId={selectedPropertyId} onClose={() => setSelectedPropertyId(null)} />
     </Box>
