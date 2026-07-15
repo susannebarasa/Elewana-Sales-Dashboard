@@ -90,6 +90,8 @@ export type DashboardQueryId =
   | 'bookingNewConfirmedByMonth'
   | 'bookingConversionRow'
   | 'marketSegments'
+  | 'agentTotalsRow'
+  | 'agentTotalsLyRow'
 
 export const ALL_QUERY_IDS: readonly DashboardQueryId[] = [
   'pdRows',
@@ -151,6 +153,8 @@ export const ALL_QUERY_IDS: readonly DashboardQueryId[] = [
   'bookingNewConfirmedByMonth',
   'bookingConversionRow',
   'marketSegments',
+  'agentTotalsRow',
+  'agentTotalsLyRow',
 ] as const
 
 /**
@@ -320,6 +324,14 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     'dayUseAgentRows',
     'agentPropCountRows',
     'agentConversionRows',
+    // AD.totals (2026-07-16g, leaderboard footer) — agentTotalsRow/agentTotalsLyRow mirror
+    // agRows' own rv+lg join structure exactly (same r.date_created basis, same status splits,
+    // same AND_A/AND_P scoping) but aggregate instead of per-agent, so the footer is a genuine
+    // full-population total (not capped to the visible top 150), reconcilable with agRows' own
+    // rv_raw/nt values — not a reuse of the Trade Partners KPI cards, which use a different
+    // (i.date_in) date basis and would not sum-reconcile with what the table actually shows.
+    'agentTotalsRow',
+    'agentTotalsLyRow',
   ],
   cn: ['cdRows', 'cdLyRows', 'kpiConsult', 'kpiConsultLy', 'kpiAgentRev', 'kpiAgentRevLy'],
   'property-performance': [

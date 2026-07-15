@@ -67,6 +67,11 @@ export interface AgentData {
   yearly: AgentYearly[]
   // ALL agents (same population as `yearly` would have been pre-trim, ~833), minimal fields only.
   yearlyDirectory: AgentDirectoryItem[]
+  // Leaderboard footer totals (2026-07-16g) — genuine full-population aggregates (not capped to
+  // the visible top 150), correctly re-narrowed to whatever segment/property/period filter is
+  // applied. revenue is $M (matches KP_BASE.agents.arev's convention); adr and nights are raw.
+  // yoyPct is null (not 0 or fabricated) when there's no real prior-year revenue base.
+  totals: { revenue: number; nights: number; adr: number; agentCount: number; yoyPct: number | null }
   byProp: { pr: string; id: string | null; rv: number; ly: number; extras: number; extrasLy: number }[]
   byMonth: { months: string[]; act: number[]; ly: number[]; extras: number[]; extrasLy: number[] }
   occByMonth: { months: string[]; act: number[]; ly: number[] }

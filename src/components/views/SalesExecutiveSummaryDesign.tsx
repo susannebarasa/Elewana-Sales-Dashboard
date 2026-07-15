@@ -16,6 +16,7 @@ import {
   Chart as ChartJS, CategoryScale, LinearScale,
   PointElement, LineElement, BarElement, Tooltip as ChartTooltip,
 } from 'chart.js'
+import type { Plugin } from 'chart.js'
 import { Line, Bar } from 'react-chartjs-2'
 import type { DashboardData, EntityClickContext, KpiMetric } from '@/types'
 import type { SesFilters } from '@/app/sales-exec-summary/page'
@@ -203,6 +204,14 @@ export default function SalesExecutiveSummaryDesign({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let byPropData: any = null
   let segmentActive = false
+  // Chart 1 subtitle scope + Chart 2 legend (2026-07-16e) — both derived purely from `filters`
+  // (already a prop) and the byProp coloring logic just below, no new data/query. Mirrors the
+  // Claude Design mockup's self-relabeling scope/legend, adapted to this chart's actual coloring
+  // (uniform accent when a Segment is active; selected-vs-dimmed when a Property is picked; a
+  // single dimmed tone when neither is set — this chart has no "top 3" highlighting, unlike the
+  // mockup, so the legend describes what's really on screen rather than copying that wording).
+  let chart1Scope = ''
+  let byPropLegendItems: { label: string; color: string; dashed?: boolean }[] = []
 
   if (chartsData) {
     paceChartData = {
@@ -218,6 +227,7 @@ export default function SalesExecutiveSummaryDesign({
     // AgentsView's AD.byProp, which /api/dashboard already filters server-side by the Segment
     // ('market') param — no client-side re-filtering needed here).
     segmentActive = filters.market !== 'all'
+    chart1Scope = `${segmentActive ? filters.market : 'Portfolio'}${filters.property !== 'all' ? ` · ${propertyLabel}` : ''}`
     const selectedPropertyId = filters.property !== 'all' ? filters.property : null
     byPropItems = segmentActive ? chartsData.AD.byProp.slice(0, 10) : chartsData.OD.props
     byPropData = segmentActive
@@ -233,6 +243,59 @@ export default function SalesExecutiveSummaryDesign({
             borderRadius: 3,
           }],
         }
+    byPropLegendItems = segmentActive
+      ? [{ label: `${filters.market} revenue`, color: T.oc }]
+      : selectedPropertyId
+        ? [{ label: 'Selected property', color: T.oc }, { label: 'Other properties', color: 'rgba(183,99,42,0.55)' }]
+        : [{ label: 'Relative occupancy', color: 'rgba(183,99,42,0.55)' }]
+  }
+
+  // Value labels on chart points/bars (2026-07-16g) — mirrors the mockup's lineLabels/barLabels
+  // plugins exactly (window.TWEAKS.valueLabels confirmed true there, i.e. the mockup ships with
+  // labels-on, not a toggled-off default). Chart.js afterDatasetsDraw plugins, defined per-render
+  // so they can close over segmentActive for the By-Property chart's occ-% vs revenue-$k format.
+  const lineValueLabelsPlugin: Plugin<'line'> = {
+    id: 'lineValueLabels',
+    afterDatasetsDraw(chart) {
+      const ctx = chart.ctx
+      const m0 = chart.getDatasetMeta(0)
+      const m1 = chart.getDatasetMeta(1)
+      const n = m0.data.length
+      if (!n || !m1.data.length) return
+      const d0 = chart.data.datasets[0].data as number[]
+      const d1 = chart.data.datasets[1].data as number[]
+      ctx.save()
+      ctx.font = '600 9.5px "JetBrains Mono", monospace'
+      for (let i = 0; i < n; i++) {
+        const p0 = m0.data[i], p1 = m1.data[i]
+        const actualAbove = p0.y <= p1.y // this-year line is higher on screen at this point
+        ctx.textAlign = i === 0 ? 'left' : i === n - 1 ? 'right' : 'center'
+        const dx = i === 0 ? 4 : i === n - 1 ? -4 : 0
+        ctx.fillStyle = T.ocd
+        ctx.fillText(`$${Math.round(d0[i])}k`, p0.x + dx, p0.y + (actualAbove ? -9 : 16))
+        ctx.fillStyle = '#8A7C64'
+        ctx.fillText(`$${Math.round(d1[i])}k`, p1.x + dx, p1.y + (actualAbove ? 16 : -9))
+      }
+      ctx.restore()
+    },
+  }
+  const barValueLabelsPlugin: Plugin<'bar'> = {
+    id: 'barValueLabels',
+    afterDatasetsDraw(chart) {
+      const ctx = chart.ctx
+      const meta = chart.getDatasetMeta(0)
+      const data = chart.data.datasets[0].data as number[]
+      ctx.save()
+      ctx.font = '600 10px "JetBrains Mono", monospace'
+      ctx.fillStyle = T.ink2
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'middle'
+      meta.data.forEach((bar, i) => {
+        const v = data[i]
+        ctx.fillText(segmentActive ? `$${Math.round(v)}k` : `${Math.round(v)}%`, bar.x + 6, bar.y)
+      })
+      ctx.restore()
+    },
   }
 
   const narrative = kpisData
@@ -376,7 +439,7 @@ export default function SalesExecutiveSummaryDesign({
           <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', mb: '16px' }}>
             <ChartCard
               title="Monthly Revenue Trend — 2026 vs LY"
-              sub={`Monthly confirmed Room Revenue, this year vs last`}
+              sub={`${chart1Scope} — monthly confirmed Room Revenue, this year vs last`}
               legend={<ChartLegend items={[{ label: filters.year, color: T.oc }, { label: 'Last Year', color: T.ly, dashed: true }]} />}
             >
               <Line
@@ -388,23 +451,27 @@ export default function SalesExecutiveSummaryDesign({
                     y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, callback: (v: number | string) => `$${v}k` } },
                   },
                 }}
+                plugins={[lineValueLabelsPlugin]}
               />
             </ChartCard>
             <ChartCard
               title="By Property"
               sub={segmentActive ? `${filters.market} revenue by property ($k) · this period` : 'Relative occupancy · trailing 90 days'}
               height={Math.max(230, byPropItems.length * 22 + 26)}
+              legend={<ChartLegend items={byPropLegendItems} />}
             >
               <Bar
                 data={byPropData}
                 options={{
                   ...CHART_OPTS, indexAxis: 'y' as const,
+                  layout: { padding: { right: 44 } },
                   scales: {
                     ...CHART_OPTS.scales,
                     y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, autoSkip: false, crossAlign: 'far' as const } },
                   },
                   ...propertyBarClickOptions(byPropItems as unknown as { id: string | null }[], onSelectProperty, 'sales-exec-summary'),
                 }}
+                plugins={[barValueLabelsPlugin]}
               />
             </ChartCard>
           </Box>
@@ -469,6 +536,47 @@ export default function SalesExecutiveSummaryDesign({
                   )}
                 </TableBody>
               </Table>
+            </Box>
+            {/* Footer totals (2026-07-16f) — mirrors the mockup's .tbltotals row. Sourced from
+                AD.totals, a dedicated server-side aggregate over agRows' full matching population
+                (same date_created basis, same exclusions/segment/property/period filters) — NOT a
+                sum of the visible top-{LEADERBOARD_CAP} rows, so it stays correct even when the
+                table is capped. Recalculates under any Segment filter (e.g. DMC only) since AD.totals
+                itself is queried with the same AND_A segment clause as the leaderboard population. */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', mt: '14px', pt: '14px', borderTop: `0.5px solid ${T.ink}` }}>
+              <Box>
+                <Typography sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: T.mu, mb: '2px' }}>
+                  {filters.market !== 'all' ? `${filters.market} Room Revenue` : 'Total Room Revenue'}
+                </Typography>
+                <Typography sx={{ fontFamily: T.mo, fontSize: 16, fontWeight: 600, color: T.ink }}>
+                  {fmtK(leaderboardData.AD.totals.revenue, '$M')}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: T.mu, mb: '2px' }}>Total Room Nights</Typography>
+                <Typography sx={{ fontFamily: T.mo, fontSize: 16, fontWeight: 600, color: T.ink }}>
+                  {leaderboardData.AD.totals.nights.toLocaleString()}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: T.mu, mb: '2px' }}>Blended ADR</Typography>
+                <Typography sx={{ fontFamily: T.mo, fontSize: 16, fontWeight: 600, color: T.ink }}>
+                  ${leaderboardData.AD.totals.adr.toLocaleString()}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography sx={{ fontFamily: T.sa, fontSize: 9, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: T.mu, mb: '2px' }}>
+                  {leaderboardData.AD.totals.agentCount.toLocaleString()} Agent{leaderboardData.AD.totals.agentCount === 1 ? '' : 's'}
+                </Typography>
+                <Typography sx={{
+                  fontFamily: T.mo, fontSize: 16, fontWeight: 600,
+                  color: leaderboardData.AD.totals.yoyPct == null ? T.mu : leaderboardData.AD.totals.yoyPct >= 0 ? T.rg : T.rr,
+                }}>
+                  {leaderboardData.AD.totals.yoyPct == null
+                    ? '—'
+                    : `${leaderboardData.AD.totals.yoyPct >= 0 ? '+' : ''}${leaderboardData.AD.totals.yoyPct.toFixed(1)}% YoY`}
+                </Typography>
+              </Box>
             </Box>
           </Box>
         )}

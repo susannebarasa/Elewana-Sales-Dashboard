@@ -447,6 +447,99 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         ]
       ),
 
+      // Agent Leaderboard footer totals (2026-07-16g) — mirrors agRows' own rv+lg join EXACTLY
+      // (same r.date_created basis for both revenue and nights, same status splits — rv_raw via
+      // status='30' only, nt via status IN ('20','30') activity basis — same AND_A/AND_P scoping)
+      // but aggregates instead of returning one row per agent, so total_revenue/total_nights are
+      // genuine sums over the FULL matching population (not capped to the visible top 150) and
+      // reconcile with agRows' own rv_raw/nt columns — not the Trade Partners KPI cards
+      // (kpiAgentRev), which use i.date_in and would silently diverge from what the table shows.
+      // No roomrev/res sub-subqueries here — this only needs nt (nights), not adr, since Blended
+      // ADR is derived in JS from total_revenue/total_nights (matching the design mockup).
+      // agentCount is COUNT(DISTINCT rv.agent_id) over the same join, so it's guaranteed to equal
+      // AD.yearlyDirectory.length (built from this exact same agRows population) — a built-in
+      // cross-check, not a separately-derived number that could drift.
+      agentTotalsRow: () => queryOne<{ total_revenue: number; total_nights: number; agent_count: number }>(
+        `SELECT SUM(rv.rv_raw) AS total_revenue, SUM(lg.nt) AS total_nights, COUNT(DISTINCT rv.agent_id) AS agent_count
+        FROM (
+          SELECT r.agent_id, ${ROOM_REVENUE_SUM_SQL} AS rv_raw
+          FROM reservations r
+          JOIN itineraries i ON r.reservation_number = i.reservation_number
+          JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
+          LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
+          WHERE r.status = '30' AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+          GROUP BY r.agent_id
+        ) rv
+        JOIN (
+          SELECT r.agent_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt
+          FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
+          WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('r.date_created', cy, monthLo, monthHi)}
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+          GROUP BY r.agent_id
+        ) lg ON rv.agent_id=lg.agent_id
+        JOIN agents a ON rv.agent_id=a.agent_id
+        WHERE a.agent_name NOT IN (?)
+          AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_A}`,
+        [
+          KES_RATE,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE
+        ]
+      ),
+
+      // LY counterpart of agentTotalsRow above — identical shape, cy -> ly, same monthLo/monthHi
+      // (same-period-last-year, matching agLyRows' own cy->ly convention) — feeds the footer's
+      // Blended YoY tile via (total_revenue - ly.total_revenue) / ly.total_revenue.
+      agentTotalsLyRow: () => queryOne<{ total_revenue: number; total_nights: number; agent_count: number }>(
+        `SELECT SUM(rv.rv_raw) AS total_revenue, SUM(lg.nt) AS total_nights, COUNT(DISTINCT rv.agent_id) AS agent_count
+        FROM (
+          SELECT r.agent_id, ${ROOM_REVENUE_SUM_SQL} AS rv_raw
+          FROM reservations r
+          JOIN itineraries i ON r.reservation_number = i.reservation_number
+          JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
+          LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
+          WHERE r.status = '30' AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)}
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+          GROUP BY r.agent_id
+        ) rv
+        JOIN (
+          SELECT r.agent_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt
+          FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
+          WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('r.date_created', ly, monthLo, monthHi)}
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+          GROUP BY r.agent_id
+        ) lg ON rv.agent_id=lg.agent_id
+        JOIN agents a ON rv.agent_id=a.agent_id
+        WHERE a.agent_name NOT IN (?)
+          AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_A}`,
+        [
+          KES_RATE,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE
+        ]
+      ),
+
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
       // else), grouped by agent — merged into AD.yearly's extras_raw in JS. Same pattern as
       // the AD.byProp query. FIX (2026-07-13, extras-table revenue): broadened beyond Day Use.
@@ -1924,6 +2017,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const agRows = qArr<{ ag_id: string; nm: string; rv_raw: number; extras_raw: number; nt: number; adr: number; r_adr: number; agent_physical_country: string | null; agent_postal_country: string | null }>('agRows')
     const dayUseAgentRows = qArr<{ agent_id: string; extras: number }>('dayUseAgentRows')
     const agLyRows = qArr<{ nm: string; rv_raw: number }>('agLyRows')
+    const agentTotalsRow = qOne<{ total_revenue: number; total_nights: number; agent_count: number }>('agentTotalsRow')
+    const agentTotalsLyRow = qOne<{ total_revenue: number; total_nights: number; agent_count: number }>('agentTotalsLyRow')
     const agPropRows = qArr<{ pr: string; property_id: string; rv: number; ly_val: number; extras: number; extras_ly: number }>('agPropRows')
     const dayUsePropRows = qArr<{ property_id: string; extras: number; extras_ly: number }>('dayUsePropRows')
     const agMonthRows = qArr<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>('agMonthRows')
@@ -2083,6 +2178,27 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           mkt: segment.marketSegment,
         }
       }),
+      // Leaderboard footer totals (2026-07-16g) — genuine full-population aggregates from
+      // agentTotalsRow/agentTotalsLyRow (see those queries' own comments), NOT derived from
+      // `yearly` (which is capped to the top 150) or from the Trade Partners KPI cards (different
+      // date basis — see dashboardViews.ts's comment on why those weren't reused). Correctly
+      // re-narrows to whatever segment/property/period is currently applied, since
+      // agentTotalsRow/agentTotalsLyRow carry the exact same AND_A/AND_P/dateInYearMonthRange
+      // scoping as every other filtered query in this file — a segment filter (e.g. "DMC only")
+      // changes AND_A, which both queries already include.
+      totals: (() => {
+        const totalRevenueRaw = n(agentTotalsRow?.total_revenue)
+        const totalNights = i(agentTotalsRow?.total_nights)
+        const agentCount = i(agentTotalsRow?.agent_count)
+        const totalRevenueLyRaw = n(agentTotalsLyRow?.total_revenue)
+        return {
+          revenue: totalRevenueRaw / 1e6, // $M, matches KP_BASE.agents.arev's convention
+          nights: totalNights,
+          adr: Math.round(totalRevenueRaw / Math.max(totalNights, 1)),
+          agentCount,
+          yoyPct: totalRevenueLyRaw > 0 ? ((totalRevenueRaw - totalRevenueLyRaw) / totalRevenueLyRaw) * 100 : null,
+        }
+      })(),
       byProp: (() => {
         const dayUseMap = new Map(dayUsePropRows.map((r) => [r.property_id, r]))
         return agPropRows.map((r) => {
