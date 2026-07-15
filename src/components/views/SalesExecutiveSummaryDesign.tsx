@@ -235,7 +235,9 @@ export default function SalesExecutiveSummaryDesign({
         }
   }
 
-  const narrative = kpisData ? buildExecutiveNarrative(kpisData, filters.period) : null
+  const narrative = kpisData
+    ? buildExecutiveNarrative(kpisData, filters.period, filters.property !== 'all' ? propertyLabel : null)
+    : null
   const [headline, ...body] = narrative ?? []
 
   return (
