@@ -171,6 +171,11 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     'kpiRevNightsLy',
     'kpiLyBkgs',
     'kpiBudgetActual',
+    // Full Year vs Budget fix (2026-07-16e) — KP_BASE.pace.budgetFullYear (execNarrative.ts's
+    // sentence1, period==='a') needs kpiTotalRevFullYear's booking-inclusive, monthLo/monthHi-
+    // bound total. Without it here, this view's own qOne('kpiTotalRevFullYear') silently returns
+    // null -> totalRevFullYearM=0 -> a $0 Full Year figure, not the intended fix.
+    'kpiTotalRevFullYear',
     'budgetActualByPropRows',
     'revparNightsRows',
     'kpiForecastTargetRows',
@@ -264,6 +269,9 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     'kpiRevNightsLy',
     'kpiLyBkgs',
     'kpiBudgetActual',
+    // Full Year vs Budget fix (2026-07-16e) — see 'exec-summary' comment above; needed for
+    // KP_BASE.pace.budgetFullYear, now read by execNarrative.ts's sentence1 for period==='a'.
+    'kpiTotalRevFullYear',
     'budgetActualByPropRows',
     'revparNightsRows',
     'kpiForecastTargetRows',
@@ -301,6 +309,10 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     // KP_BASE.pace.budgetMtd/budgetYtd + KP_BASE.execPace.vsBudget (also sentence1 of the
     // narrative, which reads these same two fields)
     'kpiBudgetActual',
+    // KP_BASE.pace.budgetFullYear (2026-07-16e fix) — sentence1's period==='a' branch, added
+    // alongside kpiBudgetActual above because the previous Full-Year-reuses-YTD bug meant no
+    // genuine full-year figure was ever read here.
+    'kpiTotalRevFullYear',
     // AGENT_PACE.gainers/decliners — sentence2 of the narrative (execNarrative.ts)
     'agentPaceRows',
   ],

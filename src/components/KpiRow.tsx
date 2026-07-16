@@ -155,6 +155,13 @@ export default function KpiRow({ metrics, propMult = 1, periodMult = 1 }: Props)
                 ? { text: `${arrow} ${diffStr} (${chgStr}) vs ${baselineTag}`, color: r }
                 : undefined
             }
+            labelInfo={
+              m.tooltip
+                ? <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>
+                    {m.tooltip.map((line, idx) => <span key={idx}>{line}</span>)}
+                  </Box>
+                : undefined
+            }
           />
         )
       })}

@@ -13,17 +13,17 @@ import Chip from '@mui/material/Chip'
 import Tooltip from '@mui/material/Tooltip'
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
-  BarElement, Tooltip as ChartTooltip,
+  BarElement, PointElement, LineElement, Tooltip as ChartTooltip, Legend as ChartLegend,
 } from 'chart.js'
-import type { ChartOptions } from 'chart.js'
-import { Bar } from 'react-chartjs-2'
+import type { ChartData, ChartOptions } from 'chart.js'
+import { Bar, Chart } from 'react-chartjs-2'
 import type { DashboardData, EntityClickContext } from '@/types'
 import { propertyBarClickOptions } from '@/lib/chartClicks'
 import { KpiCardShell } from '@/components/KpiRow'
 import EmptyState from '@/components/EmptyState'
 import { PROPERTY_HIGHLIGHT } from '@/lib/designTokens'
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
+ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, ChartTooltip, ChartLegend)
 
 type Props = {
   data: DashboardData
@@ -119,6 +119,95 @@ export default function PropertyPerformanceView({ data, filters, onSelectPropert
     ...propertyBarClickOptions(varianceRows.map((r) => ({ id: r.propertyId })), onSelectProperty, 'property-performance'),
   }
 
+  // Revenue & Occupancy chart (2026-07-16f) — Budget vs Actual Room Revenue grouped bars per
+  // property, with an Occupancy % dot overlay (green = at/above that property's own Budget
+  // Occupancy %, red = below). Uses data.BUDGET.occByProperty, NOT PROPERTY_PERFORMANCE/
+  // revenueChartData's 18-property list — occByProperty is the union of PROPERTY_ROOM_COUNTS (18,
+  // carries LEPC/NXR/Lewa's capacity caveats) plus Afrochic (budget file only, no room-count entry)
+  // so all four caveat properties appear here rather than Afrochic being silently absent the way
+  // it already is from PROPERTY_PERFORMANCE. Sorted by Budget Room Revenue descending (this
+  // chart's own primary axis), independent of the Room Revenue-sorted table/charts above.
+  const revOccRows = [...data.BUDGET.occByProperty].sort((a, b) => (b.budgetRevenue ?? -1) - (a.budgetRevenue ?? -1))
+  // Mixed bar+dot chart — react-chartjs-2/chart.js's ChartData<TType> generic doesn't have a
+  // clean built-in shape for "bar chart with one line-type overlay dataset," so this is typed
+  // loosely and cast at the call site; Chart.js's runtime handles per-dataset `type` overrides
+  // (the actual mixed-chart mechanism) regardless of the TS shape.
+  const revOccChartData = {
+    labels: revOccRows.map((r) => r.propertyName),
+    datasets: [
+      {
+        type: 'bar' as const,
+        label: 'Budget Room Revenue',
+        data: revOccRows.map((r) => r.budgetRevenue ?? 0),
+        backgroundColor: 'rgba(183,99,42,0.35)',
+        borderRadius: 3,
+        yAxisID: 'y',
+      },
+      {
+        type: 'bar' as const,
+        label: 'Actual Room Revenue',
+        data: revOccRows.map((r) => r.actualRevenue ?? 0),
+        backgroundColor: 'rgba(183,99,42,0.85)',
+        borderRadius: 3,
+        yAxisID: 'y',
+      },
+      {
+        type: 'line' as const,
+        label: 'Occupancy % (vs Budget)',
+        data: revOccRows.map((r) => r.actualOccPct),
+        showLine: false,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        pointBorderWidth: 0,
+        pointBackgroundColor: revOccRows.map((r) => (
+          r.actualOccPct === null || r.budgetOccPct === null
+            ? 'rgba(107,95,80,0.4)'
+            : r.actualOccPct >= r.budgetOccPct ? VARIANCE_OVER : VARIANCE_UNDER
+        )),
+        yAxisID: 'y1',
+      },
+    ],
+  }
+  const revOccChartOptions: ChartOptions<'bar'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: true, position: 'top', labels: { font: { size: 10 }, boxWidth: 12 } },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const row = revOccRows[ctx.dataIndex]
+            if (ctx.dataset.label === 'Occupancy % (vs Budget)') {
+              return row.actualOccPct === null
+                ? `Occupancy %: no data (${row.caveat ?? 'see caveat'})`
+                : `Occupancy %: ${row.actualOccPct.toFixed(1)}% (Budget: ${row.budgetOccPct !== null ? row.budgetOccPct.toFixed(1) + '%' : '—'})`
+            }
+            return `${ctx.dataset.label}: ${fmtDollar((ctx.raw as number) ?? 0)}`
+          },
+          afterBody: (items) => {
+            const row = revOccRows[items[0]?.dataIndex ?? 0]
+            return row?.caveat ? [`⚠ ${row.caveat}`] : []
+          },
+        },
+      },
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { font: { size: 9 }, color: 'rgba(107,95,80,0.6)' } },
+      y: {
+        position: 'left',
+        grid: { color: 'rgba(201,190,169,0.4)' },
+        ticks: { font: { size: 9 }, color: 'rgba(107,95,80,0.6)', callback: (v) => fmtDollar(Number(v)) },
+      },
+      y1: {
+        position: 'right',
+        min: 0,
+        grid: { drawOnChartArea: false },
+        ticks: { font: { size: 9 }, color: 'rgba(107,95,80,0.6)', callback: (v) => `${v}%` },
+      },
+    },
+    ...propertyBarClickOptions(revOccRows.map((r) => ({ id: r.propertyId })), onSelectProperty, 'property-performance'),
+  }
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       <Grid container spacing={1.5}>
@@ -181,6 +270,18 @@ export default function PropertyPerformanceView({ data, filters, onSelectPropert
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardContent>
+          <Typography variant="h6" sx={{ fontSize: 15, mb: 0.25 }}>Revenue &amp; Occupancy by Property</Typography>
+          <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
+            Full-year 2026 · bars = Budget vs Actual Room Revenue (left axis) · dots = Occupancy % (right axis), green = at/above that property&apos;s own Budget Occupancy %, red = below · hover a dot for the Budget Occupancy % it&apos;s compared against · click a bar/dot for detail
+          </Typography>
+          <Box sx={{ height: 320, position: 'relative' }}>
+            <Chart type="bar" data={revOccChartData as unknown as ChartData<'bar', (number | null)[], string>} options={revOccChartOptions} />
+          </Box>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent>

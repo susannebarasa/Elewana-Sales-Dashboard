@@ -142,6 +142,12 @@ export interface KpiMetric {
   // see src/lib/budget.ts) rather than a real prior-year or STLY value. KpiRow renders these
   // with a "BUDGET" tag, same mechanism as the STLY tag above.
   budget?: boolean
+  // Explanatory/comparison text lines (2026-07-16g) — rendered as a hover tooltip (info icon next
+  // to the label). Used on cards where the headline value alone is easy to misread — e.g. Room
+  // Revenue's Actualized-vs-OTB-vs-Budget breakdown, or Room Nights Sold/RevPAR/Occupancy %'s
+  // explanation of why the MTD/YTD/Full Year toggle does or doesn't move the number. Omitted for
+  // cards where the headline value is self-explanatory.
+  tooltip?: string[]
 }
 
 export interface KpiBase {
@@ -151,6 +157,7 @@ export interface KpiBase {
     idx: KpiMetric
     budgetMtd: KpiMetric
     budgetYtd: KpiMetric
+    budgetFullYear: KpiMetric
     lead: KpiMetric
   }
   occ: {
@@ -209,8 +216,24 @@ export interface BudgetByPropertyItem {
   variancePct: number | null
 }
 
+// Budget Occupancy % by property (2026-07-16) — mirrors RevParPropertyItem's Actual Occ %
+// formula (Budget Room Nights ÷ Available Room Nights instead of Sold Nights ÷ Available Room
+// Nights), reusing the same PROPERTY_ROOM_COUNTS capacity figure and caveats (LEPC/NXR/Lewa).
+// Afrochic is appended as its own row (propertyId WB639) since it has no PROPERTY_ROOM_COUNTS
+// entry at all — budgetOccPct/actualOccPct are null for it, caveat explains why.
+export interface BudgetOccPropertyItem {
+  propertyName: string
+  propertyId: string | null
+  budgetRevenue: number | null
+  actualRevenue: number | null
+  budgetOccPct: number | null
+  actualOccPct: number | null
+  caveat: string | null
+}
+
 export interface BudgetData {
   byProp: BudgetByPropertyItem[]
+  occByProperty: BudgetOccPropertyItem[]
 }
 
 // Forecast Room Nights (2026-07-14) — Dennis's revenue-manager formula:

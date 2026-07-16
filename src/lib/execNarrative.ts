@@ -25,22 +25,28 @@ function paceDescriptor(vsBudgetPct: number): string {
   return 'running well behind plan'
 }
 
-// Sentence 1 (CONFIDENT) — Room Revenue vs Budget, now period-aware (2026-07-14 fix). MTD uses
-// the real MTD actual/budget pair (KP_BASE.pace.budgetMtd); YTD uses the same pair the
-// "Pace vs Budget %" KPI card (KP_BASE.execPace.vsBudget) and YTD-vs-Budget mini-stat already show.
-// Full Year reuses the YTD pair — not a fabrication: the live API has no distinct full-year budget
-// target (pace.budgetYtd/execPace.vsBudget are identical regardless of any period param), and the
-// Full Year KPI card itself already mirrors YTD's revenue for the same reason (future months
-// haven't happened yet).
+// Sentence 1 (CONFIDENT) — Room Revenue vs Budget, period-aware. MTD uses the real MTD
+// actual/budget pair (KP_BASE.pace.budgetMtd); YTD uses the same pair the "Pace vs Budget %" KPI
+// card (KP_BASE.execPace.vsBudget) and YTD-vs-Budget mini-stat already show.
+// FIX (2026-07-16e): Full Year previously reused the YTD pair outright (budgetYtd, itself anchored
+// to realCurrentMonth regardless of period — see kpiBudgetActual's comment in route.ts) — caught
+// live: Room Revenue/Budget/%-of-Budget were byte-identical between the Full Year and YTD toggles.
+// Full Year now uses KP_BASE.pace.budgetFullYear, a genuinely full-year pair (Actual = revM, which
+// IS period-scoped — monthHi=12 when period==='a'; Budget = the full annual target), and computes
+// its own pct directly rather than borrowing execPace.vsBudget (which is also YTD-anchored).
+// NOT changed here: Occupancy vs Budget (occAdrSentence below) is deliberately full-year-fixed
+// for ALL periods, per its own route.ts comment and an earlier confirmed decision — that's a
+// separate, larger change (would need new monthLo/monthHi-bound Occupancy queries) and wasn't
+// part of this fix.
 // Property-aware subject (2026-07-16d) — when a single property is selected (propertyName passed
 // in, e.g. "Arusha Coffee Lodge"), name it explicitly instead of the generic "Room Revenue" that
 // only reads naturally for the portfolio-wide "All Properties" view.
 function sentence1(data: DashboardData, period: 'm' | 'y' | 'a', propertyName?: string | null): string {
   const periodWord = period === 'm' ? 'MTD' : period === 'a' ? 'Full Year' : 'YTD'
-  const metric = period === 'm' ? data.KP_BASE.pace.budgetMtd : data.KP_BASE.pace.budgetYtd
+  const metric = period === 'm' ? data.KP_BASE.pace.budgetMtd : period === 'a' ? data.KP_BASE.pace.budgetFullYear : data.KP_BASE.pace.budgetYtd
   const actual = metric.v
   const budget = metric.ly ?? 0
-  const pct = period === 'm' ? (budget > 0 ? (actual / budget) * 100 : 0) : data.KP_BASE.execPace.vsBudget.v
+  const pct = period === 'y' ? data.KP_BASE.execPace.vsBudget.v : (budget > 0 ? (actual / budget) * 100 : 0)
   const subject = propertyName ? `${propertyName}'s Room Revenue` : 'Room Revenue'
   return `${subject} ${periodWord} is ${fmtM(actual)} against a ${fmtM(budget)} budget (${pct.toFixed(1)}% of budget), ${paceDescriptor(pct)}.`
 }

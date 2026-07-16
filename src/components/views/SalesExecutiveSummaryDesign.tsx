@@ -12,6 +12,8 @@ import TableHead from '@mui/material/TableHead'
 import TableBody from '@mui/material/TableBody'
 import TableRow from '@mui/material/TableRow'
 import TableCell from '@mui/material/TableCell'
+import MuiTooltip from '@mui/material/Tooltip'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
   PointElement, LineElement, BarElement, Tooltip as ChartTooltip,
@@ -123,9 +125,19 @@ function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric;
         '&:hover': { transform: 'translateY(-2px)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.9), 0 13px 24px rgba(31,26,20,.15), 0 4px 7px rgba(31,26,20,.10)' },
       }}
     >
-      <Typography sx={{ fontFamily: T.sa, fontSize: 8.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.mu, mb: '7px' }}>
-        {label}
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4, mb: '7px' }}>
+        <Typography sx={{ fontFamily: T.sa, fontSize: 8.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.mu }}>
+          {label}
+        </Typography>
+        {metric.tooltip && (
+          <MuiTooltip
+            title={<Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>{metric.tooltip.map((line, idx) => <span key={idx}>{line}</span>)}</Box>}
+            arrow
+          >
+            <InfoOutlinedIcon sx={{ fontSize: 12, color: T.mu }} />
+          </MuiTooltip>
+        )}
+      </Box>
       <Typography sx={{ fontFamily: T.se, fontSize: 33, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: s.valueColor, mb: '8px', textShadow: '0 1px 0 rgba(255,255,255,.85), 0 2px 4px rgba(31,26,20,.22)' }}>
         {fmtK(metric.v, metric.fmt)}
       </Typography>
@@ -137,11 +149,21 @@ function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric;
   )
 }
 
-function NarrativePill({ value, label, sub, color }: { value: string; label: string; sub?: string; color?: string }) {
+function NarrativePill({ value, label, sub, color, tooltip }: { value: string; label: string; sub?: string; color?: string; tooltip?: string[] }) {
   return (
     <Box sx={{ bgcolor: 'rgba(255,255,255,0.045)', border: '0.5px solid rgba(210,190,160,0.22)', borderRadius: '7px', p: '10px 13px', flex: 1 }}>
       <Typography sx={{ fontFamily: T.se, fontSize: 24, fontWeight: 600, lineHeight: 1, color: '#F5EDD8' }}>{value}</Typography>
-      <Typography sx={{ fontSize: 8, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#7A6A58', mt: '6px' }}>{label}</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4, mt: '6px' }}>
+        <Typography sx={{ fontSize: 8, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#7A6A58' }}>{label}</Typography>
+        {tooltip && (
+          <MuiTooltip
+            title={<Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>{tooltip.map((line, idx) => <span key={idx}>{line}</span>)}</Box>}
+            arrow
+          >
+            <InfoOutlinedIcon sx={{ fontSize: 11, color: '#7A6A58' }} />
+          </MuiTooltip>
+        )}
+      </Box>
       {sub && <Typography sx={{ fontFamily: T.mo, fontSize: 9.5, mt: '5px', color: color ?? '#7A6A58' }}>{sub}</Typography>}
     </Box>
   )
@@ -414,7 +436,7 @@ export default function SalesExecutiveSummaryDesign({
                 <Typography sx={{ fontSize: 13, color: '#A89880', lineHeight: 1.72 }}>{body.join(' ')}</Typography>
               </Box>
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: '9px', borderLeft: '0.5px solid rgba(210,190,160,0.22)', pl: '22px' }}>
-                <NarrativePill value={fmtK(kpisData.KP_BASE.occ.revpar.v, kpisData.KP_BASE.occ.revpar.fmt)} label="RevPAR" sub="occ × ADR" />
+                <NarrativePill value={fmtK(kpisData.KP_BASE.occ.revpar.v, kpisData.KP_BASE.occ.revpar.fmt)} label="RevPAR" sub="occ × ADR" tooltip={kpisData.KP_BASE.occ.revpar.tooltip} />
                 <NarrativePill
                   value={fmtK(kpisData.KP_BASE.pace.budgetMtd.v, kpisData.KP_BASE.pace.budgetMtd.fmt)}
                   label="MTD vs Budget"

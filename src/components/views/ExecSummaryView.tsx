@@ -4,6 +4,8 @@ import Grid from '@mui/material/Grid'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Typography from '@mui/material/Typography'
+import MuiTooltip from '@mui/material/Tooltip'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
   PointElement, LineElement, BarElement, Tooltip,
@@ -39,7 +41,17 @@ function MiniStat({ label, metric, deltaLabel }: { label: string; metric: KpiMet
   const delta = budgetVariance(metric)
   return (
     <Box sx={{ flex: 1, textAlign: 'center' }}>
-      <Typography variant="overline" sx={{ display: 'block', fontSize: '0.6rem', color: 'text.secondary' }}>{label}</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.4 }}>
+        <Typography variant="overline" sx={{ display: 'block', fontSize: '0.6rem', color: 'text.secondary' }}>{label}</Typography>
+        {metric.tooltip && (
+          <MuiTooltip
+            title={<Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>{metric.tooltip.map((line, idx) => <span key={idx}>{line}</span>)}</Box>}
+            arrow
+          >
+            <InfoOutlinedIcon sx={{ fontSize: 12, color: 'text.secondary' }} />
+          </MuiTooltip>
+        )}
+      </Box>
       <Typography sx={{ fontFamily: '"Cormorant Garamond", Georgia, serif', fontWeight: 700, fontSize: 26, lineHeight: 1.1, color: 'text.primary' }}>
         {fmtK(metric.v, metric.fmt)}
       </Typography>
