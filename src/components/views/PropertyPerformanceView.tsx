@@ -125,9 +125,18 @@ export default function PropertyPerformanceView({ data, filters, onSelectPropert
   // revenueChartData's 18-property list — occByProperty is the union of PROPERTY_ROOM_COUNTS (18,
   // carries LEPC/NXR/Lewa's capacity caveats) plus Afrochic (budget file only, no room-count entry)
   // so all four caveat properties appear here rather than Afrochic being silently absent the way
-  // it already is from PROPERTY_PERFORMANCE. Sorted by Budget Room Revenue descending (this
-  // chart's own primary axis), independent of the Room Revenue-sorted table/charts above.
-  const revOccRows = [...data.BUDGET.occByProperty].sort((a, b) => (b.budgetRevenue ?? -1) - (a.budgetRevenue ?? -1))
+  // it already is from PROPERTY_PERFORMANCE.
+  // FIX (2026-07-16h, verified-swap pass): sort corrected to Actual Room Revenue descending — was
+  // Budget Revenue descending, which disagreed with revenueChartData's/the table's own Room
+  // Revenue sort above. Now consistent across this whole page.
+  const revOccRows = [...data.BUDGET.occByProperty].sort((a, b) => (b.actualRevenue ?? -1) - (a.actualRevenue ?? -1))
+  // Shared by dot color + tooltip wording below, so the two can't disagree. Ngorongoro Explorer
+  // (NXR) is forced to the "no data" treatment despite having real, non-null $0/0% numbers —
+  // confirmed decision (2026-07-16h): a pre-opening property showing "green, at/above budget"
+  // would misread as performing rather than simply not yet open. Every other caveat property
+  // (Lewa, Afrochic, LEPC) is unaffected — Lewa still gets its real (caveated) colored dot.
+  const isNoDataRow = (r: (typeof revOccRows)[number]): boolean =>
+    r.actualOccPct === null || r.budgetOccPct === null || r.propertyName === 'Ngorongoro Explorer'
   // Mixed bar+dot chart — react-chartjs-2/chart.js's ChartData<TType> generic doesn't have a
   // clean built-in shape for "bar chart with one line-type overlay dataset," so this is typed
   // loosely and cast at the call site; Chart.js's runtime handles per-dataset `type` overrides
@@ -160,9 +169,9 @@ export default function PropertyPerformanceView({ data, filters, onSelectPropert
         pointHoverRadius: 7,
         pointBorderWidth: 0,
         pointBackgroundColor: revOccRows.map((r) => (
-          r.actualOccPct === null || r.budgetOccPct === null
+          isNoDataRow(r)
             ? 'rgba(107,95,80,0.4)'
-            : r.actualOccPct >= r.budgetOccPct ? VARIANCE_OVER : VARIANCE_UNDER
+            : r.actualOccPct! >= r.budgetOccPct! ? VARIANCE_OVER : VARIANCE_UNDER
         )),
         yAxisID: 'y1',
       },
@@ -178,9 +187,9 @@ export default function PropertyPerformanceView({ data, filters, onSelectPropert
           label: (ctx) => {
             const row = revOccRows[ctx.dataIndex]
             if (ctx.dataset.label === 'Occupancy % (vs Budget)') {
-              return row.actualOccPct === null
+              return isNoDataRow(row)
                 ? `Occupancy %: no data (${row.caveat ?? 'see caveat'})`
-                : `Occupancy %: ${row.actualOccPct.toFixed(1)}% (Budget: ${row.budgetOccPct !== null ? row.budgetOccPct.toFixed(1) + '%' : '—'})`
+                : `Occupancy %: ${row.actualOccPct!.toFixed(1)}% (Budget: ${row.budgetOccPct !== null ? row.budgetOccPct.toFixed(1) + '%' : '—'})`
             }
             return `${ctx.dataset.label}: ${fmtDollar((ctx.raw as number) ?? 0)}`
           },
