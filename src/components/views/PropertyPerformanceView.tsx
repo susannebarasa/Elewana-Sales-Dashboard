@@ -12,7 +12,7 @@ import TableCell from '@mui/material/TableCell'
 import Chip from '@mui/material/Chip'
 import Tooltip from '@mui/material/Tooltip'
 import {
-  Chart as ChartJS, CategoryScale, LinearScale,
+  Chart as ChartJS, CategoryScale, LinearScale, BarController, LineController,
   BarElement, PointElement, LineElement, Tooltip as ChartTooltip, Legend as ChartLegend,
 } from 'chart.js'
 import type { ChartData, ChartOptions } from 'chart.js'
@@ -23,7 +23,11 @@ import { KpiCardShell } from '@/components/KpiRow'
 import EmptyState from '@/components/EmptyState'
 import { PROPERTY_HIGHLIGHT } from '@/lib/designTokens'
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, ChartTooltip, ChartLegend)
+// BarController/LineController registered explicitly (2026-07-16j fix) — the generic <Chart>
+// component below (needed for the mixed bar+line Revenue & Occupancy chart) doesn't auto-register
+// a controller the way the typed <Bar> component used elsewhere on this page does, so without
+// these the chart threw at render and silently failed to appear.
+ChartJS.register(CategoryScale, LinearScale, BarController, LineController, BarElement, PointElement, LineElement, ChartTooltip, ChartLegend)
 
 type Props = {
   data: DashboardData

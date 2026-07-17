@@ -319,13 +319,20 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
   'sales-exec-summary-charts': [
     // PD (Monthly Revenue Trend line chart)
     'pdRows',
-    // OD.props (By Property bar chart when no Market Segment is selected) — OD.arr is built from
-    // arrRows/dayUseArrRows but this page never reads data.OD.arr, so those two are excluded.
-    'ocPropRows',
-    // AD.byProp (By Property bar chart when a Market Segment IS selected) — AD.yearly's own
-    // dependencies (agRows/agLyRows/etc.) are NOT needed here, only agPropRows/dayUsePropRows.
-    'agPropRows',
-    'dayUsePropRows',
+    // BUDGET.occByProperty (Revenue & Occupancy by Property chart, 2026-07-17 — replaces the old
+    // By Property chart, which read OD.props/AD.byProp, both dropped below). Same two queries
+    // 'sales-exec-summary-kpis' already fetches for KP_BASE.occ.revpar/occPct — traced in
+    // route.ts: budgetOccByProperty <- revparByProperty <- actualByPropMap (budgetActualByPropRows)
+    // + revparNightsMap (revparNightsRows) + PROPERTY_ROOM_COUNTS/getPropertyBudget (static).
+    'budgetActualByPropRows',
+    'revparNightsRows',
+    // ocPropRows (OD.props) / agPropRows+dayUsePropRows (AD.byProp) dropped (2026-07-17) — both
+    // only fed the old By Property chart's two display modes, now removed.
+    // MARKET_SEGMENT_PERFORMANCE (Room Revenue by Market Segment donut, moved here 2026-07-17 from
+    // Market Segment Performance's own tab, per explicit correction) — same separate 9-query
+    // market-segment batch 'market-segment-performance' already fetches, run concurrently
+    // alongside the main query batch (see route.ts's Promise.all), not sequentially after it.
+    'marketSegments',
   ],
   'sales-exec-summary-leaderboard': [
     // AD.yearly (+ new AD.yearlyDirectory, see Task 2) — agRows is the base row set,
@@ -390,9 +397,11 @@ export const VIEW_DATA_KEYS: Record<Exclude<DashboardView, 'all'>, readonly stri
   // (execNarrative.ts) — REVPAR/FORECAST/CANCEL_DRIVERS/LOW_SEASON_AGENTS are genuinely unread,
   // see the VIEW_QUERY_IDS comment above.
   'sales-exec-summary-kpis': ['KP_BASE', 'AGENT_PACE', 'lastUpdated'],
-  // PD feeds the Monthly Revenue Trend chart; OD/AD together feed the By Property chart
-  // (OD.props when no Segment selected, AD.byProp when one is).
-  'sales-exec-summary-charts': ['PD', 'OD', 'AD', 'lastUpdated'],
+  // PD feeds the Monthly Revenue Trend chart; BUDGET feeds the Revenue & Occupancy by Property
+  // chart (2026-07-17, replaces the old By Property chart — OD/AD no longer read here);
+  // MARKET_SEGMENT_PERFORMANCE feeds the Room Revenue by Market Segment donut (2026-07-17,
+  // relocated here from the Market Segment Performance tab).
+  'sales-exec-summary-charts': ['PD', 'BUDGET', 'MARKET_SEGMENT_PERFORMANCE', 'lastUpdated'],
   // AD only — AD.yearly (capped 150) + AD.yearlyDirectory (all agents, light fields) feed the
   // Agent Leaderboard table and the Find Agent search respectively (see Task 2).
   'sales-exec-summary-leaderboard': ['AD', 'lastUpdated'],

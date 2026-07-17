@@ -991,9 +991,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // extras_raw (rate_components-classified) alongside rev_raw, plus extras_table_revenue via a
       // CROSS JOIN sibling mirroring kpiRevNights' own `dayuse` subquery, but WITHOUT its
       // `i2.date_in <= CURDATE()` cap, since this whole query is deliberately booking-inclusive.
-      kpiTotalRevFullYear: () => queryOne<{ rev_raw: number; extras_raw: number; extras_table_revenue: number }>(
-        `SELECT rev.rev_raw, rev.extras_raw, dayuse.extras_table_revenue
+      // Extended again (2026-07-16i, Room Nights Sold tooltip) with a `nights` sibling mirroring
+      // kpiRevNights' own `nights` subquery — same joins/exclusions, just without its
+      // `i.date_out <= CURDATE()` cap — plus day_use_nights added to the `dayuse` subquery the
+      // same way kpiRevNights adds it, so total_nights (nights.total_nights + dayuse.day_use_nights
+      // in JS below) is the booking-inclusive sibling of totalNights, same basis as totalRevFullYearM.
+      kpiTotalRevFullYear: () => queryOne<{ rev_raw: number; extras_raw: number; extras_table_revenue: number; total_nights: number; day_use_nights: number }>(
+        `SELECT nights.total_nights, rev.rev_raw, rev.extras_raw, dayuse.extras_table_revenue, dayuse.day_use_nights
         FROM (
+          SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
+          FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out > i.date_in
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+        ) nights
+        CROSS JOIN (
           SELECT ${ROOM_REVENUE_SUM_SQL} AS rev_raw, ${EXTRAS_SUM_SQL} AS extras_raw
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
           JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
@@ -1003,14 +1015,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             AND r.reservation_number NOT LIKE ?${AND_P}
         ) rev
         CROSS JOIN (
-          SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table_revenue
+          SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table_revenue,
+            COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} THEN i2.itinerary_id END) AS day_use_nights
           FROM itineraries i2
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
           WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', cy, monthLo, monthHi)}${AND_P2}
         ) dayuse`,
-        [KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
+        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
       ),
 
       // KPI: actual Room Revenue for "Pace vs Budget" — MTD (the real current calendar month
@@ -2047,7 +2060,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const cdRows = qArr<{ code: string; display_name: string | null; bk: number; rv: number; extras: number; cv: number }>('cdRows')
     const kpiConfirmed = qOne<{ confirmed_bkgs: number }>('kpiConfirmed')
     const kpiRevNights = qOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>('kpiRevNights')
-    const kpiTotalRevFullYear = qOne<{ rev_raw: number; extras_raw: number; extras_table_revenue: number }>('kpiTotalRevFullYear')
+    const kpiTotalRevFullYear = qOne<{ rev_raw: number; extras_raw: number; extras_table_revenue: number; total_nights: number; day_use_nights: number }>('kpiTotalRevFullYear')
     const kpiBudgetActual = qOne<{ mtd_rev: number; ytd_rev: number }>('kpiBudgetActual')
     const budgetActualByPropRows = qArr<{ property_id: string; rev: number }>('budgetActualByPropRows')
     const kpiAgents = qOne<{ active_agents: number }>('kpiAgents')
@@ -2378,6 +2391,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // OTB (booking-inclusive) Extras — Room Revenue tooltip (2026-07-16g) — same rev/extras
     // split as extrasM (kpiRevNights), but on kpiTotalRevFullYear's booking-inclusive basis.
     const otbExtrasM = (n(kpiTotalRevFullYear?.extras_raw) + n(kpiTotalRevFullYear?.extras_table_revenue)) / 1e6
+    // OTB (booking-inclusive) nights — Room Nights Sold tooltip (2026-07-16i) — same total_nights +
+    // day_use_nights combination as totalNights (kpiRevNights) below, but on kpiTotalRevFullYear's
+    // booking-inclusive basis, so the two are directly comparable (actualized vs on-the-books).
+    const otbNights = i(kpiTotalRevFullYear?.total_nights) + i(kpiTotalRevFullYear?.day_use_nights)
     const arevPct = totalRevFullYearM > 0 ? Math.round((arevM / totalRevFullYearM) * 100) : 0
     // Property (decision #3, "no exceptions"): kpiTotalRevFullYear (the denominator) is now
     // AND_P-filtered alongside kpiAgentRev (the numerator, already filtered) — see that query's
@@ -2503,26 +2520,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const occBudgetRns = property !== 'all' ? getPropertyBudget(property, cy, 1, 12).rns : getPortfolioBudget(cy, 1, 12).rns
     const portfolioOccPctBudget = availableSum > 0 ? (occBudgetRns / availableSum) * 100 : 0
 
-    // KPI hover-tooltip content (2026-07-16g) — explanatory/comparison text surfaced on Room
-    // Revenue, Room Nights Sold, RevPAR, and Occupancy % specifically because these four sit in
-    // the same KP_BASE.occ row but respond to the MTD/YTD/Full Year toggle inconsistently:
-    // nights/revenue plateau at Full Year=YTD (actualized-stays-only, can't exceed "what's
-    // happened by today"); RevPAR/occPct never move at all (period-invariant by design, see their
-    // own comments above). Room Revenue's tooltip additionally surfaces the OTB (booking-
-    // inclusive, same basis as Budget) figure so the plateau doesn't read as "nothing is
-    // happening" — current-period only, no new cross-period queries (confirmed with the user).
+    // KPI hover-tooltip content (2026-07-16g) — labeled Actualized/OTB/Budget values, no
+    // explanatory prose (2026-07-16i simplification pass — the labels speak for themselves).
+    // RevPAR/Occupancy % keep fullYearFixedTooltip below (period-invariant, needs the explanation);
+    // Occupancy %/ADR otherwise carry no tooltip — both are obviously actual-only values.
     const fmtDollarM = (v: number): string => `$${v.toFixed(1)}M`
-    const periodLabel = period === 'm' ? 'MTD' : period === 'a' ? 'Full Year' : 'YTD'
     const activeBudgetRevM = period === 'm' ? mtdBudgetRevM : period === 'a' ? fullYearBudgetRevM : ytdBudgetRevM
     const otbVsBudgetPct = activeBudgetRevM > 0 ? (totalRevFullYearM / activeBudgetRevM) * 100 : null
     const revTooltip = [
-      `${periodLabel} — Actualized (stays already completed): ${fmtDollarM(revM)}`,
-      `${periodLabel} — On The Books (all confirmed, incl. future stays): ${fmtDollarM(totalRevFullYearM)} vs ${fmtDollarM(activeBudgetRevM)} Budget${otbVsBudgetPct !== null ? ` (${otbVsBudgetPct.toFixed(1)}%)` : ' (no budget set)'}`,
-      `Extras Revenue — Actualized: ${fmtDollarM(extrasM)} · On The Books: ${fmtDollarM(otbExtrasM)}`,
+      `Actualized: ${fmtDollarM(revM)}`,
+      `OTB: ${fmtDollarM(totalRevFullYearM)} vs Budget ${fmtDollarM(activeBudgetRevM)}${otbVsBudgetPct !== null ? ` (${otbVsBudgetPct.toFixed(1)}%)` : ''}`,
+      `Extras — Actualized: ${fmtDollarM(extrasM)} · OTB: ${fmtDollarM(otbExtrasM)}`,
     ]
     const nightsTooltip = [
-      'Counts only nights already stayed (actualized) — the same convention as RevPAR/Occupancy %.',
-      'Full Year and YTD show the same number until the year actually ends: future nights can\'t be "actualized" yet, regardless of the toggle.',
+      `Actualized: ${totalNights.toLocaleString()}`,
+      `OTB: ${otbNights.toLocaleString()}`,
     ]
     const fullYearFixedTooltip = [
       'Always full-year 2026, regardless of the MTD/YTD/Full Year toggle — an intentional, retrospective-occupancy convention (not period-filterable).',
@@ -2572,8 +2584,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         revpar: kpi(portfolioRevpar, '$', 'RevPAR', revparOccCaption, 400, 300, undefined, undefined, undefined, undefined, fullYearFixedTooltip),
         // `ly` slot carries the Budget Occupancy % target (see portfolioOccPctBudget above),
         // `budget: true` so KpiRow/budgetVariance label it "BUDGET" instead of YoY — same
-        // convention as pace.budgetMtd/budgetYtd.
-        occPct: kpi(portfolioOccPct, 'pct', 'Occupancy %', revparOccCaption, 55, 45, undefined, portfolioOccPctBudget, undefined, true, fullYearFixedTooltip),
+        // convention as pace.budgetMtd/budgetYtd. No tooltip (2026-07-16i) — an obviously
+        // actual-only value, doesn't need explanation.
+        occPct: kpi(portfolioOccPct, 'pct', 'Occupancy %', revparOccCaption, 55, 45, undefined, portfolioOccPctBudget, undefined, true),
       },
       agents: {
         active: kpi(activeAgents, 'int', 'Active Trade Partners', 'this period', 700, 500, undefined, activeAgentsLy),

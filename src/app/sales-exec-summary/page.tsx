@@ -5,6 +5,7 @@ import type { DashboardData, EntityClickContext } from '@/types'
 import SalesExecutiveSummaryDesign from '@/components/views/SalesExecutiveSummaryDesign'
 import SalesExecAgentPanel from '@/components/SalesExecAgentPanel'
 import PropertyProfilePanel from '@/components/PropertyProfilePanel'
+import MarketSegmentProfilePanel from '@/components/MarketSegmentProfilePanel'
 
 export interface SesFilters { period: 'm' | 'y' | 'a'; year: string; market: string; property: string }
 
@@ -46,6 +47,7 @@ export default function SalesExecutiveSummaryPage() {
   const [leaderboard, setLeaderboard] = useState<SectionState>(INITIAL_SECTION_STATE)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null)
+  const [selectedSegment, setSelectedSegment] = useState<string | null>(null)
   // Cache keyed by `${section}|${filterCacheKey}` — extends the previous single-section cacheRef
   // pattern to 3 sections sharing one Map, so switching back to a previously-seen filter combo
   // still skips the network for every section independently.
@@ -104,6 +106,9 @@ export default function SalesExecutiveSummaryPage() {
   const handleSelectProperty = (ctx: EntityClickContext) => {
     if (ctx.type === 'property') setSelectedPropertyId(ctx.id)
   }
+  const handleSelectSegment = (ctx: EntityClickContext) => {
+    if (ctx.type === 'segment') setSelectedSegment(ctx.id)
+  }
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#EDEEE6' }}>
@@ -121,9 +126,20 @@ export default function SalesExecutiveSummaryPage() {
         onFilters={setFilters}
         onSelectAgent={setSelectedAgentId}
         onSelectProperty={handleSelectProperty}
+        onSelectSegment={handleSelectSegment}
       />
       <SalesExecAgentPanel agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />
       <PropertyProfilePanel propertyId={selectedPropertyId} onClose={() => setSelectedPropertyId(null)} />
+      {/* channel: 'all' hardcoded (2026-07-17) — this page has no Channel filter (dropped per
+          explicit instruction, see the module comment above); matches the 'all' already hardcoded
+          into this page's own /api/dashboard fetch params. */}
+      <MarketSegmentProfilePanel
+        segment={selectedSegment}
+        filters={{ ...filters, channel: 'all' }}
+        onClose={() => setSelectedSegment(null)}
+        onSelectProperty={handleSelectProperty}
+        onSelectAgent={setSelectedAgentId}
+      />
     </Box>
   )
 }

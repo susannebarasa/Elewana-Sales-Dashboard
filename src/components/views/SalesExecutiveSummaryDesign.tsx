@@ -15,11 +15,11 @@ import TableCell from '@mui/material/TableCell'
 import MuiTooltip from '@mui/material/Tooltip'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import {
-  Chart as ChartJS, CategoryScale, LinearScale,
-  PointElement, LineElement, BarElement, Tooltip as ChartTooltip,
+  Chart as ChartJS, CategoryScale, LinearScale, BarController, LineController,
+  PointElement, LineElement, BarElement, ArcElement, Tooltip as ChartTooltip,
 } from 'chart.js'
-import type { Plugin } from 'chart.js'
-import { Line, Bar } from 'react-chartjs-2'
+import type { ChartData, ChartOptions, Plugin } from 'chart.js'
+import { Line, Chart, Doughnut } from 'react-chartjs-2'
 import type { DashboardData, EntityClickContext, KpiMetric } from '@/types'
 import type { SesFilters } from '@/app/sales-exec-summary/page'
 import { fmtK, budgetVariance } from '@/components/KpiRow'
@@ -27,11 +27,19 @@ import { buildExecutiveNarrative } from '@/lib/execNarrative'
 import { propertyBarClickOptions } from '@/lib/chartClicks'
 import { PROPERTY_ROOM_COUNTS } from '@/lib/constants'
 import { MARKET_SEGMENT_VALUES } from '@/lib/agentSegments'
+import { MARKET_SEGMENT_COLORS } from '@/lib/designTokens'
 import { T } from '@/lib/sesTheme'
 import SesAgentSearch from '@/components/SesAgentSearch'
 import { SesKpiNarrativeSkeleton, SesChartsSkeleton, SesLeaderboardSkeleton } from '@/components/SesSkeleton'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ChartTooltip)
+// BarController/LineController registered explicitly (mirrors PropertyPerformanceView.tsx's
+// 2026-07-16j fix) — the generic <Chart> component below (needed for the mixed bar+line Revenue &
+// Occupancy chart) doesn't auto-register a controller the way the typed <Line> component elsewhere
+// on this page does; without these the chart throws at render and silently fails to appear.
+// ArcElement (2026-07-17) — needed by the typed <Doughnut> component (Room Revenue by Market
+// Segment chart); DoughnutController auto-registers via that typed component the same way
+// BarController does via <Bar> elsewhere, so only the element needs registering here.
+ChartJS.register(CategoryScale, LinearScale, BarController, LineController, PointElement, LineElement, BarElement, ArcElement, ChartTooltip)
 
 const PROPERTY_OPTIONS = [
   { value: 'all', label: 'All Properties' },
@@ -69,6 +77,7 @@ type Props = {
   onFilters: (f: SesFilters) => void
   onSelectAgent: (agentId: string) => void
   onSelectProperty: (context: EntityClickContext) => void
+  onSelectSegment: (context: EntityClickContext) => void
 }
 
 const CHART_OPTS = {
@@ -80,6 +89,20 @@ const CHART_OPTS = {
     y: { grid: { color: 'rgba(201,190,169,0.4)' }, ticks: { font: { size: 9 }, color: T.mu } },
   },
 } as const
+
+// Raw-dollar axis/tooltip formatter for the Revenue & Occupancy chart (2026-07-17) — takes the
+// actual dollar figure (e.g. 3284659), NOT a pre-scaled-to-millions value like fmtK's '$M' format
+// expects. Passing a raw dollar amount through fmtK(v, '$M') double-counts the scale (reads as
+// "$3284659.0M" instead of "$3.3M") — this divides by 1e6/1e3 itself, matching
+// PropertyPerformanceView.tsx's own fmtDollar (same chart, same data shape, same bug to avoid).
+const fmtDollarAxis = (v: number | null): string =>
+  v === null ? '—' : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}k` : `$${Math.round(v).toLocaleString()}`
+
+// Mirrors PropertyPerformanceView.tsx's isNoDataRow exactly — Ngorongoro Explorer is forced to
+// the "no data" treatment despite real $0/0% numbers (pre-opening property; a colored dot would
+// misread as performing rather than not yet open — confirmed 2026-07-16h decision, same basis here).
+const isRevOccNoDataRow = (r: { actualOccPct: number | null; budgetOccPct: number | null; propertyName: string }): boolean =>
+  r.actualOccPct === null || r.budgetOccPct === null || r.propertyName === 'Ngorongoro Explorer'
 
 function Variance({ metric }: { metric: KpiMetric }) {
   const d = budgetVariance(metric)
@@ -115,7 +138,10 @@ const RAG_STYLES: Record<Rag, { bg: string; border: string; valueColor: string; 
 function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric; caption: string }) {
   const rag = ragFromYoyPct(yoyPct(metric))
   const s = RAG_STYLES[rag]
-  return (
+  // Hover-area fix (2026-07-17) — the tooltip used to be wrapped around only the small info icon,
+  // so a user had to hit that few-pixel target to see it. MuiTooltip now wraps the whole card
+  // (below); the icon stays as a visual affordance only, no longer its own separate hover target.
+  const card = (
     <Box
       sx={{
         background: s.bg, border: `0.5px solid ${s.border}`, borderRadius: '9px', p: '15px 17px 15px',
@@ -129,14 +155,7 @@ function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric;
         <Typography sx={{ fontFamily: T.sa, fontSize: 8.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.mu }}>
           {label}
         </Typography>
-        {metric.tooltip && (
-          <MuiTooltip
-            title={<Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>{metric.tooltip.map((line, idx) => <span key={idx}>{line}</span>)}</Box>}
-            arrow
-          >
-            <InfoOutlinedIcon sx={{ fontSize: 12, color: T.mu }} />
-          </MuiTooltip>
-        )}
+        {metric.tooltip && <InfoOutlinedIcon sx={{ fontSize: 12, color: T.mu }} />}
       </Box>
       <Typography sx={{ fontFamily: T.se, fontSize: 33, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: s.valueColor, mb: '8px', textShadow: '0 1px 0 rgba(255,255,255,.85), 0 2px 4px rgba(31,26,20,.22)' }}>
         {fmtK(metric.v, metric.fmt)}
@@ -147,6 +166,16 @@ function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric;
       <Box sx={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '3px', bgcolor: s.barColor }} />
     </Box>
   )
+  return metric.tooltip
+    ? (
+      <MuiTooltip
+        title={<Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>{metric.tooltip.map((line, idx) => <span key={idx}>{line}</span>)}</Box>}
+        arrow
+      >
+        {card}
+      </MuiTooltip>
+    )
+    : card
 }
 
 function NarrativePill({ value, label, sub, color, tooltip }: { value: string; label: string; sub?: string; color?: string; tooltip?: string[] }) {
@@ -186,13 +215,18 @@ function ChartLegend({ items }: { items: { label: string; color: string; dashed?
   )
 }
 
-function ChartCard({ title, sub, children, height = 230, legend }: { title: string; sub: string; children: ReactNode; height?: number; legend?: ReactNode }) {
+// legendPosition (2026-07-17, Market Segment donut) — every existing ChartCard on this page puts
+// its legend below the plot; the donut's spec explicitly calls for the legend ABOVE the chart
+// (name + % of total read before the shape, not after). Added as an opt-in prop rather than a new
+// component so the donut still gets this card's exact title/sub/border treatment.
+function ChartCard({ title, sub, children, height = 230, legend, legendPosition = 'below' }: { title: string; sub: string; children: ReactNode; height?: number; legend?: ReactNode; legendPosition?: 'above' | 'below' }) {
   return (
     <Box sx={{ bgcolor: T.cd, border: `0.5px solid ${T.br}`, borderRadius: '9px', p: '16px 18px', flex: 1 }}>
       <Typography sx={{ fontFamily: T.se, fontSize: 18, fontWeight: 500, color: T.ink, letterSpacing: '-0.005em' }}>{title}</Typography>
       <Typography sx={{ fontSize: 10, color: T.mu, mb: '12px', fontStyle: 'italic' }}>{sub}</Typography>
-      <Box sx={{ height, position: 'relative' }}>{children}</Box>
-      {legend}
+      {legendPosition === 'above' && legend}
+      <Box sx={{ height, position: 'relative', mt: legendPosition === 'above' ? '12px' : 0 }}>{children}</Box>
+      {legendPosition === 'below' && legend}
     </Box>
   )
 }
@@ -208,7 +242,7 @@ export default function SalesExecutiveSummaryDesign({
   kpisData, kpisLoading, kpisError,
   chartsData, chartsLoading, chartsError,
   leaderboardData, leaderboardLoading, leaderboardError,
-  filters, onFilters, onSelectAgent, onSelectProperty,
+  filters, onFilters, onSelectAgent, onSelectProperty, onSelectSegment,
 }: Props) {
   const propertyLabel = filters.property === 'all'
     ? 'All Properties'
@@ -222,18 +256,18 @@ export default function SalesExecutiveSummaryDesign({
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let paceChartData: any = null
-  let byPropItems: ({ nm: string; id: string | null } | { pr: string; id: string | null })[] = []
+  // Chart 1 subtitle scope (2026-07-16e) — derived purely from `filters` (already a prop), no new
+  // data/query. Mirrors the Claude Design mockup's self-relabeling scope.
+  const segmentActive = filters.market !== 'all'
+  const chart1Scope = `${segmentActive ? filters.market : 'Portfolio'}${filters.property !== 'all' ? ` · ${propertyLabel}` : ''}`
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let byPropData: any = null
-  let segmentActive = false
-  // Chart 1 subtitle scope + Chart 2 legend (2026-07-16e) — both derived purely from `filters`
-  // (already a prop) and the byProp coloring logic just below, no new data/query. Mirrors the
-  // Claude Design mockup's self-relabeling scope/legend, adapted to this chart's actual coloring
-  // (uniform accent when a Segment is active; selected-vs-dimmed when a Property is picked; a
-  // single dimmed tone when neither is set — this chart has no "top 3" highlighting, unlike the
-  // mockup, so the legend describes what's really on screen rather than copying that wording).
-  let chart1Scope = ''
-  let byPropLegendItems: { label: string; color: string; dashed?: boolean }[] = []
+  let revOccRows: DashboardData['BUDGET']['occByProperty'] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let revOccChartData: any = null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let segmentRows: DashboardData['MARKET_SEGMENT_PERFORMANCE'] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let segmentDonutData: any = null
 
   if (chartsData) {
     paceChartData = {
@@ -244,38 +278,145 @@ export default function SalesExecutiveSummaryDesign({
       ],
     }
 
-    // By-Property chart — occupancy ranking when no Segment is selected (matches
-    // ExecSummaryView's OD.props), Segment-scoped revenue by property when one is (matches
-    // AgentsView's AD.byProp, which /api/dashboard already filters server-side by the Segment
-    // ('market') param — no client-side re-filtering needed here).
-    segmentActive = filters.market !== 'all'
-    chart1Scope = `${segmentActive ? filters.market : 'Portfolio'}${filters.property !== 'all' ? ` · ${propertyLabel}` : ''}`
-    const selectedPropertyId = filters.property !== 'all' ? filters.property : null
-    byPropItems = segmentActive ? chartsData.AD.byProp.slice(0, 10) : chartsData.OD.props
-    byPropData = segmentActive
-      ? {
-          labels: byPropItems.map((p) => ('pr' in p ? p.pr : p.nm)),
-          datasets: [{ data: chartsData.AD.byProp.slice(0, 10).map((p) => p.rv), backgroundColor: T.oc, borderRadius: 3 }],
-        }
-      : {
-          labels: chartsData.OD.props.map((p) => p.nm),
-          datasets: [{
-            data: chartsData.OD.props.map((p) => p.oc),
-            backgroundColor: chartsData.OD.props.map((p) => (selectedPropertyId && p.id === selectedPropertyId ? T.oc : 'rgba(183,99,42,0.55)')),
-            borderRadius: 3,
-          }],
-        }
-    byPropLegendItems = segmentActive
-      ? [{ label: `${filters.market} revenue`, color: T.oc }]
-      : selectedPropertyId
-        ? [{ label: 'Selected property', color: T.oc }, { label: 'Other properties', color: 'rgba(183,99,42,0.55)' }]
-        : [{ label: 'Relative occupancy', color: 'rgba(183,99,42,0.55)' }]
+    // Room Revenue by Market Segment donut (2026-07-17 — moved here from the Market Segment
+    // Performance tab per explicit correction: this chart belongs on Sales Executive Summary, not
+    // Market Segment Performance). All 9 segments individually, never folded into "Other" (explicit
+    // product requirement). Color keyed to segment IDENTITY via MARKET_SEGMENT_COLORS
+    // (designTokens.ts), not sort position — a segment keeps its color as revenue shifts and the
+    // ranking reorders (dataviz skill's "color follows the entity, never its rank" rule).
+    segmentRows = [...chartsData.MARKET_SEGMENT_PERFORMANCE].sort((a, b) => b.roomRevenue - a.roomRevenue)
+    const segmentColor = (segment: string): string => MARKET_SEGMENT_COLORS[segment] ?? 'rgba(122,106,88,0.6)'
+    segmentDonutData = {
+      labels: segmentRows.map((r) => r.segment),
+      datasets: [{
+        data: segmentRows.map((r) => r.roomRevenue),
+        backgroundColor: segmentRows.map((r) => segmentColor(r.segment)),
+        // Card-surface border acts as a visible gap between slices (dataviz skill's spacer
+        // convention) — without it, two similarly-lit adjacent slices can read as one shape.
+        borderColor: T.cd,
+        borderWidth: 2,
+        hoverOffset: 6,
+      }],
+    }
+
+    // Revenue & Occupancy by Property (2026-07-17) — replaces the old By-Property chart (occupancy
+    // ranking / segment-scoped revenue). Budget vs Actual Room Revenue grouped bars + an Occupancy %
+    // dot overlay (green = at/above that property's own Budget Occupancy %, red = below), same
+    // data/logic as PropertyPerformanceView's own Revenue & Occupancy chart (data.BUDGET.
+    // occByProperty) — kept as two near-identical implementations rather than a shared component
+    // since the two pages' design systems (MUI Card/Typography vs this page's raw sx/T-token
+    // styling) don't share a chart-wrapper convention. Portfolio-wide, so unlike the old chart it
+    // does NOT respond to the Market Segment filter — Budget has no segment breakdown to filter by.
+    revOccRows = [...chartsData.BUDGET.occByProperty].sort((a, b) => (b.actualRevenue ?? -1) - (a.actualRevenue ?? -1))
+    revOccChartData = {
+      labels: revOccRows.map((r) => r.propertyName),
+      datasets: [
+        { type: 'bar' as const, label: 'Budget Room Revenue', data: revOccRows.map((r) => r.budgetRevenue ?? 0), backgroundColor: 'rgba(183,99,42,0.35)', borderRadius: 3, yAxisID: 'y' },
+        { type: 'bar' as const, label: 'Actual Room Revenue', data: revOccRows.map((r) => r.actualRevenue ?? 0), backgroundColor: T.oc, borderRadius: 3, yAxisID: 'y' },
+        {
+          type: 'line' as const,
+          label: 'Occupancy % (vs Budget)',
+          data: revOccRows.map((r) => r.actualOccPct),
+          showLine: false,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          pointBorderWidth: 0,
+          pointBackgroundColor: revOccRows.map((r) => (
+            isRevOccNoDataRow(r) ? 'rgba(122,106,88,0.4)' : r.actualOccPct! >= r.budgetOccPct! ? T.rg : T.rr
+          )),
+          yAxisID: 'y1',
+        },
+      ],
+    }
   }
 
-  // Value labels on chart points/bars (2026-07-16g) — mirrors the mockup's lineLabels/barLabels
-  // plugins exactly (window.TWEAKS.valueLabels confirmed true there, i.e. the mockup ships with
-  // labels-on, not a toggled-off default). Chart.js afterDatasetsDraw plugins, defined per-render
-  // so they can close over segmentActive for the By-Property chart's occ-% vs revenue-$k format.
+  const revOccLegendItems = [
+    { label: 'Budget Room Revenue', color: 'rgba(183,99,42,0.35)' },
+    { label: 'Actual Room Revenue', color: T.oc },
+    { label: 'Occupancy % (vs Budget)', color: T.rg },
+  ]
+  const revOccChartOptions: ChartOptions<'bar'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const row = revOccRows[ctx.dataIndex]
+            if (ctx.dataset.label === 'Occupancy % (vs Budget)') {
+              return isRevOccNoDataRow(row)
+                ? `Occupancy %: no data (${row.caveat ?? 'see caveat'})`
+                : `Occupancy %: ${row.actualOccPct!.toFixed(1)}% (Budget: ${row.budgetOccPct !== null ? row.budgetOccPct.toFixed(1) + '%' : '—'})`
+            }
+            return `${ctx.dataset.label}: ${fmtDollarAxis((ctx.raw as number) ?? 0)}`
+          },
+          afterBody: (items) => {
+            const row = revOccRows[items[0]?.dataIndex ?? 0]
+            return row?.caveat ? [`⚠ ${row.caveat}`] : []
+          },
+        },
+      },
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { font: { size: 9 }, color: T.mu } },
+      y: {
+        position: 'left',
+        grid: { color: 'rgba(201,190,169,0.4)' },
+        ticks: { font: { size: 9 }, color: T.mu, callback: (v) => fmtDollarAxis(Number(v)) },
+      },
+      y1: {
+        position: 'right',
+        min: 0,
+        grid: { drawOnChartArea: false },
+        ticks: { font: { size: 9 }, color: T.mu, callback: (v) => `${v}%` },
+      },
+    },
+    ...propertyBarClickOptions(revOccRows.map((r) => ({ id: r.propertyId })), onSelectProperty, 'sales-exec-summary'),
+  }
+
+  // Room Revenue by Market Segment donut — legend (name + % of total, ABOVE the chart per spec)
+  // and tooltip (exact revenue + %). totalSegmentRevenue is the sum of exactly these 9 rows, so
+  // percentages always foot to 100% — there's no hidden 10th bucket.
+  const totalSegmentRevenue = segmentRows.reduce((s, r) => s + r.roomRevenue, 0)
+  const segmentLegendItems = segmentRows.map((r) => ({
+    label: `${r.segment} (${totalSegmentRevenue > 0 ? ((r.roomRevenue / totalSegmentRevenue) * 100).toFixed(1) : '0.0'}%)`,
+    color: MARKET_SEGMENT_COLORS[r.segment] ?? 'rgba(122,106,88,0.6)',
+  }))
+  const segmentDonutOptions: ChartOptions<'doughnut'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    // Segments sorted descending (segmentRows, above) + rotation -90 (12 o'clock) means the
+    // largest segment always starts at 12 and the rest follow clockwise in descending size.
+    rotation: -90,
+    cutout: '58%',
+    plugins: {
+      legend: { display: false }, // custom legend above the chart (ChartLegend) is the one the spec asks for
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const r = segmentRows[ctx.dataIndex]
+            const pct = totalSegmentRevenue > 0 ? (r.roomRevenue / totalSegmentRevenue) * 100 : 0
+            return `${fmtDollarAxis(r.roomRevenue)} (${pct.toFixed(1)}%)`
+          },
+        },
+      },
+    },
+    onClick: (_event, elements) => {
+      const idx = elements[0]?.index
+      if (idx === undefined) return
+      const segment = segmentRows[idx]?.segment
+      if (segment) onSelectSegment({ type: 'segment', id: segment, sourceView: 'sales-exec-summary' })
+    },
+    onHover: (event, elements) => {
+      const target = event.native?.target as HTMLElement | null | undefined
+      if (target) target.style.cursor = elements.length > 0 ? 'pointer' : 'default'
+    },
+  }
+
+  // Value labels on chart points (2026-07-16g) — mirrors the mockup's lineLabels plugin exactly
+  // (window.TWEAKS.valueLabels confirmed true there, i.e. the mockup ships with labels-on, not a
+  // toggled-off default). Chart.js afterDatasetsDraw plugin.
   const lineValueLabelsPlugin: Plugin<'line'> = {
     id: 'lineValueLabels',
     afterDatasetsDraw(chart) {
@@ -301,25 +442,6 @@ export default function SalesExecutiveSummaryDesign({
       ctx.restore()
     },
   }
-  const barValueLabelsPlugin: Plugin<'bar'> = {
-    id: 'barValueLabels',
-    afterDatasetsDraw(chart) {
-      const ctx = chart.ctx
-      const meta = chart.getDatasetMeta(0)
-      const data = chart.data.datasets[0].data as number[]
-      ctx.save()
-      ctx.font = '600 10px "JetBrains Mono", monospace'
-      ctx.fillStyle = T.ink2
-      ctx.textAlign = 'left'
-      ctx.textBaseline = 'middle'
-      meta.data.forEach((bar, i) => {
-        const v = data[i]
-        ctx.fillText(segmentActive ? `$${Math.round(v)}k` : `${Math.round(v)}%`, bar.x + 6, bar.y)
-      })
-      ctx.restore()
-    },
-  }
-
   const narrative = kpisData
     ? buildExecutiveNarrative(kpisData, filters.period, filters.property !== 'all' ? propertyLabel : null)
     : null
@@ -457,44 +579,43 @@ export default function SalesExecutiveSummaryDesign({
         {/* Charts — charts section */}
         {chartsError && <Alert severity="error" sx={{ mb: '16px' }}>Failed to load charts: {chartsError}</Alert>}
         {!chartsError && (chartsLoading || !chartsData) && <SesChartsSkeleton />}
-        {!chartsError && !chartsLoading && chartsData && paceChartData && byPropData && (
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', mb: '16px' }}>
+        {!chartsError && !chartsLoading && chartsData && paceChartData && revOccChartData && segmentDonutData && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: '16px', mb: '16px' }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+              <ChartCard
+                title="Monthly Revenue Trend — 2026 vs LY"
+                sub={`${chart1Scope} — monthly confirmed Room Revenue, this year vs last`}
+                legend={<ChartLegend items={[{ label: filters.year, color: T.oc }, { label: 'Last Year', color: T.ly, dashed: true }]} />}
+              >
+                <Line
+                  data={paceChartData}
+                  options={{
+                    ...CHART_OPTS,
+                    scales: {
+                      ...CHART_OPTS.scales,
+                      y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, callback: (v: number | string) => `$${v}k` } },
+                    },
+                  }}
+                  plugins={[lineValueLabelsPlugin]}
+                />
+              </ChartCard>
+              <ChartCard
+                title="Room Revenue by Market Segment"
+                sub={`${filters.year} · share of total Room Revenue, all 9 segments · click a slice for detail`}
+                height={200}
+                legend={<ChartLegend items={segmentLegendItems} />}
+                legendPosition="above"
+              >
+                <Doughnut data={segmentDonutData} options={segmentDonutOptions} />
+              </ChartCard>
+            </Box>
             <ChartCard
-              title="Monthly Revenue Trend — 2026 vs LY"
-              sub={`${chart1Scope} — monthly confirmed Room Revenue, this year vs last`}
-              legend={<ChartLegend items={[{ label: filters.year, color: T.oc }, { label: 'Last Year', color: T.ly, dashed: true }]} />}
+              title="Revenue & Occupancy by Property"
+              sub="Full-year 2026 · bars = Budget vs Actual Room Revenue (left axis) · dots = Occupancy % (right axis), green = at/above that property's own Budget Occupancy %, red = below"
+              height={340}
+              legend={<ChartLegend items={revOccLegendItems} />}
             >
-              <Line
-                data={paceChartData}
-                options={{
-                  ...CHART_OPTS,
-                  scales: {
-                    ...CHART_OPTS.scales,
-                    y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, callback: (v: number | string) => `$${v}k` } },
-                  },
-                }}
-                plugins={[lineValueLabelsPlugin]}
-              />
-            </ChartCard>
-            <ChartCard
-              title="By Property"
-              sub={segmentActive ? `${filters.market} revenue by property ($k) · this period` : 'Relative occupancy · trailing 90 days'}
-              height={Math.max(230, byPropItems.length * 22 + 26)}
-              legend={<ChartLegend items={byPropLegendItems} />}
-            >
-              <Bar
-                data={byPropData}
-                options={{
-                  ...CHART_OPTS, indexAxis: 'y' as const,
-                  layout: { padding: { right: 44 } },
-                  scales: {
-                    ...CHART_OPTS.scales,
-                    y: { ...CHART_OPTS.scales.y, ticks: { ...CHART_OPTS.scales.y.ticks, autoSkip: false, crossAlign: 'far' as const } },
-                  },
-                  ...propertyBarClickOptions(byPropItems as unknown as { id: string | null }[], onSelectProperty, 'sales-exec-summary'),
-                }}
-                plugins={[barValueLabelsPlugin]}
-              />
+              <Chart type="bar" data={revOccChartData as unknown as ChartData<'bar', (number | null)[], string>} options={revOccChartOptions} />
             </ChartCard>
           </Box>
         )}
