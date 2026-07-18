@@ -348,6 +348,35 @@ export function buildMarketSegmentYoYQueries(year: number, propertyId: string | 
   })
 }
 
+// Per-segment Room Nights, this year vs last year (ADR diagnose_change gap-fill, 2026-07-18) —
+// nights-only analog of buildMarketSegmentYoYQueries above (same segment filter/exclusions/date
+// range), needed alongside segment revenue so segment-level ADR (= revenue/nights) and each
+// segment's nights SHARE of the total can both be computed — the nights-share delta is what
+// distinguishes a genuine rate change at a segment from a portfolio-level mix shift toward/away
+// from that segment.
+export function buildMarketSegmentNightsYoYQueries(year: number, propertyId: string | null): MarketSegmentYoYQuery[] {
+  const ly = year - 1
+  const propertyFilter = propertyId ? ' AND i.property = ?' : ''
+  return MARKET_SEGMENT_VALUES.map((segment) => {
+    const segFilter = buildAgentFilterSql('a', 'all', segment)
+    const andSeg = segFilter ? ` AND ${segFilter}` : ''
+    const sql = `SELECT
+        SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', year, 1, 12)} THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nights,
+        SUM(CASE WHEN ${caseInYearMonthRange('i.date_in', ly, 1, 12)} THEN GREATEST(DATEDIFF(i.date_out,i.date_in),0) ELSE 0 END) AS nights_ly
+      FROM reservations r
+      JOIN itineraries i ON r.reservation_number = i.reservation_number
+      JOIN agents a ON r.agent_id = a.agent_id
+      WHERE r.status = '30' AND r.agent_id IS NOT NULL AND (${dateInTwoYearsThroughMonth('i.date_in', year, ly, 12)})
+        AND r.agent_id NOT IN (?)
+        AND a.agent_name NOT IN (?)
+        AND r.rate_type NOT IN (?)
+        AND r.reservation_number NOT LIKE ?${andSeg}${propertyFilter}`
+    const params: unknown[] = [AGENT_IDS, AGENT_NAMES, NON_REV_IDS, RES_PREFIX]
+    if (propertyId) params.push(propertyId)
+    return { segment, query: { sql, params, caveat: 'On-the-books basis both years, full calendar year.' } }
+  })
+}
+
 // Named Cancellation Drivers — mirrors dashboard/route.ts's cancelDriverNightsRows +
 // cancelDriverRevRows exactly (status='90', confirmation_date IS NOT NULL so lapsed quotes never
 // masquerade as real cancellations, last_change_date within 30 days — the validated "when
@@ -423,17 +452,24 @@ export function buildForecastPaceRatio(propertyId: string | null): BuiltQuery {
 // nights by however many revenue-component rows each leg has), divided in JS by each property's own
 // PROPERTY_ROOM_COUNTS capacity. Excludes properties with no available-nights capacity or with no
 // propertyId (LEPC) — same "never fabricate a denominator" rule as the rest of this file.
-export function buildNightsByProperty(): BuiltQuery {
+function nightsByPropertySql(year: number): BuiltQuery {
   const sql = `SELECT i.property AS property_id, SUM(GREATEST(DATEDIFF(i.date_out, i.date_in), 0)) AS nights
     FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
-    WHERE r.status = '30' AND ${dateInFullYear('i.date_in', CAPACITY_YEAR)} AND i.date_out > i.date_in
+    WHERE r.status = '30' AND ${dateInFullYear('i.date_in', year)} AND i.date_out > i.date_in
       AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
     GROUP BY i.property`
-  return {
-    sql,
-    params: [NON_REV_IDS, RES_PREFIX],
-    caveat: 'Occupancy % is always full-year 2026 on this dashboard, regardless of what period is asked.',
-  }
+  return { sql, params: [NON_REV_IDS, RES_PREFIX], caveat: 'Room Nights Sold by property, on-the-books basis, full calendar year.' }
+}
+export function buildNightsByProperty(): BuiltQuery {
+  const q = nightsByPropertySql(CAPACITY_YEAR)
+  return { ...q, caveat: 'Occupancy % is always full-year 2026 on this dashboard, regardless of what period is asked.' }
+}
+// Nights by property, this year vs last year (ADR diagnose_change gap-fill, 2026-07-18) — unlike
+// Occupancy %/RevPAR, ADR (= Revenue/Nights) has no capacity-denominator dependency, so it CAN be
+// genuinely compared year over year using whatever `year` is asked, not fixed to CAPACITY_YEAR.
+// Mirrors buildRevenueByPropertyYoY's own cy/ly pattern one level down (nights instead of revenue).
+export function buildNightsByPropertyYoY(year: number): { cy: BuiltQuery; ly: BuiltQuery } {
+  return { cy: nightsByPropertySql(year), ly: nightsByPropertySql(year - 1) }
 }
 export function occupancyPctByProperty(nightsRows: { property_id: string; nights: number }[]): { propertyName: string; occPct: number }[] {
   const nightsMap = new Map(nightsRows.map((r) => [r.property_id, Number(r.nights)]))

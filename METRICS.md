@@ -1398,3 +1398,9 @@ These surfaced organically while 8 parallel reviewers traced every metric's actu
 13. **`kpiAgentRev`'s own two subqueries use different date bases** — the revenue side (`rev`) filters on `i.date_in` while the sibling Portfolio ADR/Avg Length of Stay side (`lg`) filters on `r.date_created`. Already flagged in-code as "a pre-existing asymmetry... flagged for a future decision," reproduced here so it isn't lost. See §4.
 
 ---
+
+## 11. Maintenance notes
+
+- **`diagnose_change` (AI Query Box, `src/lib/aiQuery/diagnoseChange.ts`) works from a fixed, hand-picked bundle of signals and does not automatically discover new dashboard metrics.** Whenever a new metric or major feature is added to the dashboard, revisit whether `diagnose_change`'s bundle should be extended to include it — this requires a deliberate build-and-test step, not an automatic update.
+
+---

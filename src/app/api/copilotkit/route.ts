@@ -91,11 +91,11 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'diagnose_change',
-    description: 'Explain WHY Room Revenue or Occupancy % changed — not just report the number, but rank the real, biggest contributors (property/segment/agent/cancellations for revenue; property/nights-trend/agent for occupancy). Use this for "why" questions, e.g. "why is revenue down", "why is occupancy down at Arusha". Supports revenue and occupancy metrics only — for anything else (ADR, bookings, etc.) use cannot_answer.',
+    description: 'Explain WHY Room Revenue, Occupancy %, or ADR changed — not just report the number, but rank the real, biggest contributors (property/segment/agent/cancellations for revenue; property/nights-trend/agent for occupancy; property/segment ADR-and-mix-shift/agent for ADR). Use this for "why" questions, e.g. "why is revenue down", "why is occupancy down at Arusha", "why is ADR down". Supports revenue, occupancy, and ADR metrics only — for anything else (bookings, etc.) use cannot_answer.',
     input_schema: {
       type: 'object',
       properties: {
-        metric: { type: 'string', enum: ['revenue', 'occupancy'], description: "Which metric the 'why' question is about." },
+        metric: { type: 'string', enum: ['revenue', 'occupancy', 'adr'], description: "Which metric the 'why' question is about." },
         year: yearParam,
         propertyName: propertyParam,
       },
@@ -129,7 +129,7 @@ You do not write SQL yourself for known metrics — you select the ONE tool that
 - Date basis: default to 'ytd' for a plain "this year" question. Use 'actualized' only if the question specifically means completed/past stays. Use 'otb' only if the question clearly means the whole/full year, including future bookings.
 - Occupancy %/ADR/RevPAR are always full-year 2026 on this dashboard regardless of what's asked — use occupancy_adr_revpar and let its own caveat explain this.
 - Use conversation history to resolve "that", "it", "the same property", etc. from the prior turn.
-- For a "why" question about revenue OR occupancy (e.g. "why is revenue down", "why is occupancy down", "why is Arusha's occupancy down") — use diagnose_change with the matching metric, not total_room_revenue/yoy_growth/occupancy_adr_revpar. Those only report the number; diagnose_change explains what drove it. diagnose_change only supports metric='revenue' or 'occupancy' — if asked "why" about ADR, bookings, or anything else, use cannot_answer instead of forcing diagnose_change onto a metric it doesn't support.
+- For a "why" question about revenue, occupancy, OR ADR (e.g. "why is revenue down", "why is occupancy down", "why is Arusha's occupancy down", "why is ADR down") — use diagnose_change with the matching metric, not total_room_revenue/yoy_growth/occupancy_adr_revpar. Those only report the number; diagnose_change explains what drove it. diagnose_change only supports metric='revenue', 'occupancy', or 'adr' — if asked "why" about bookings or anything else, use cannot_answer instead of forcing diagnose_change onto a metric it doesn't support.
 - Only use fallback_query if truly nothing else fits — most real questions map to one of the named tools.
 - Use cannot_answer for anything genuinely out of scope (e.g. comparing against an external MIS/finance system).`
 
@@ -304,9 +304,9 @@ export async function POST(req: NextRequest) {
             break
           }
           case 'diagnose_change': {
-            const metric = input.metric === 'occupancy' ? 'occupancy' : input.metric === 'revenue' ? 'revenue' : null
+            const metric = input.metric === 'occupancy' ? 'occupancy' : input.metric === 'adr' ? 'adr' : input.metric === 'revenue' ? 'revenue' : null
             if (!metric) {
-              resultSummary = "diagnose_change only supports the revenue and occupancy metrics — can't diagnose that yet."
+              resultSummary = "diagnose_change only supports the revenue, occupancy, and ADR metrics — can't diagnose that yet."
               caveat = ''
               break
             }
