@@ -2110,17 +2110,39 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── Assemble PF ───────────────────────────────────────────────────────────
+    // Bgt % FIX (2026-07-17) — the previous `bg: Math.min(cf + pv, 99)` never touched budget data
+    // at all: cf/pv are COUNT(status='30')/COUNT(status='20') as a % of the SAME booking
+    // population (status IN ('20','30'), no third option), so cf+pv is mathematically ~100 for
+    // any month with bookings — the "budget" line was really just a constant 99, identical every
+    // month (confirmed live: 99/99/99/99 across Jul-Oct 2026, cf/pv genuinely varying underneath
+    // it the whole time). Real fix: Confirmed+Provisional REVENUE (cf_val+pv_val — the same $
+    // figures already shown as labels on these bars, cv/pval below) against that exact month's
+    // Budget Room Revenue from budget2026Monthly.json (getPortfolioBudget/getPropertyBudget, the
+    // same source every other Budget comparison in this file uses). Revenue, not Room Nights,
+    // since cf_val/pv_val are already revenue — comparing nights would need a second, differently-
+    // shaped query and leave the bar's own $ labels on a different basis than its budget line.
+    // `bg` is now the TRUE percentage (can exceed 100, or be null if that property/month has no
+    // budget row — e.g. Afrochic) for the displayed text; `bgLinePos` is a SEPARATE 0-100 clamp
+    // used only to place the vertical marker inside the bar without pushing it off-screen when
+    // over budget — PaceView.tsx renders the two independently.
     const PF = pfRows.map((r) => {
       const cf = Math.round(n(r.cf))
       const pv = Math.round(n(r.pv))
+      const cfVal = n(r.cf_val)
+      const pvVal = n(r.pv_val)
+      const monthBudget = property !== 'all'
+        ? getPropertyBudget(property, r.yr, r.mon, r.mon)
+        : getPortfolioBudget(r.yr, r.mon, r.mon)
+      const bg = monthBudget.rev > 0 ? Math.round(((cfVal + pvVal) / monthBudget.rev) * 1000) / 10 : null
       return {
         mo: r.mo,
         cf,
         pv,
         wt: Math.max(0, 100 - cf - pv),
-        cv: fmtM(n(r.cf_val)),
-        pval: '+' + fmtM(n(r.pv_val)),
-        bg: Math.min(cf + pv, 99),
+        cv: fmtM(cfVal),
+        pval: '+' + fmtM(pvVal),
+        bg,
+        bgLinePos: bg === null ? null : Math.max(0, Math.min(bg, 100)),
       }
     })
 
@@ -2548,9 +2570,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         // `confirmedBkgs`, which stays unbounded for Pace Index/Conversion Rate below).
         // `d` updated from 'vs last year' to 'vs STLY' so the caption names the basis, on
         // top of KpiRow's STLY badge.
-        bookings: kpi(confirmedBkgsBounded, 'int', 'Confirmed Bookings', 'vs STLY', 5000, 4000, undefined, confirmedBkgsStly, true),
+        // 2026-07-17 — confirmed via live investigation that Confirmed Bookings (rolling 12mo
+        // window) and Pace Index (fixed calendar-period window, below) can diverge sharply
+        // (-56.3% vs -12.9% seen live) purely from comparing different date-window SHAPES, not a
+        // bug in either. Explicitly NOT unified — see METRICS.md §10 for why forcing one onto the
+        // other's convention would either break Confirmed Bookings' forward-pipeline meaning or
+        // reintroduce the exact "measurement artifact" (13,910 vs the real 4,451, a fake -68%
+        // delta) an earlier fix already rejected. Caption/tooltip added so this reads as
+        // deliberate, not an unexplained mismatch against its neighbor on this same tab.
+        bookings: kpi(confirmedBkgsBounded, 'int', 'Confirmed Bookings', 'vs STLY (rolling 12mo)', 5000, 4000, undefined, confirmedBkgsStly, true, undefined, [
+          'Forward pipeline: confirmed bookings for stays in the next 12 months, vs the same rolling 12-month window one year ago — not a fixed calendar period.',
+          'Deliberately different basis from Pace Index alongside it — that compares fixed calendar months instead. The two can diverge sharply without either being wrong; see METRICS.md.',
+        ]),
         rev: kpi(revM, '$M', 'Revenue on Books', `YTD ${cy}`, 70, 55, undefined, revMLy),
-        idx: kpi(paceIdx, 'f1', 'Pace Index', '100 = last year', 103, 98),
+        idx: kpi(paceIdx, 'f1', 'Pace Index', '100 = last year (same months)', 103, 98, undefined, undefined, undefined, undefined, [
+          'Compares this year\'s bookings against the SAME calendar months last year (e.g. Jan–Jul 2026 vs Jan–Jul 2025) — a fixed period, not a rolling window.',
+          'Deliberately different basis from Confirmed Bookings alongside it — that compares a rolling 12-month window instead. The two can diverge sharply without either being wrong; see METRICS.md.',
+        ]),
         lead: kpi(avgLead, 'days', 'Avg Lead Time', 'avg lead time', 140, 160, true, avgLeadLy),
         // Pace vs Budget (2026-07-13) — see the kpiBudgetActual query and mtdActualRevM/
         // ytdActualRevM/mtdBudgetRevM/ytdBudgetRevM comments above for basis. Thresholds are

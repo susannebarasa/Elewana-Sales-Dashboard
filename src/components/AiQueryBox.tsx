@@ -25,7 +25,17 @@ interface Message {
   content: string
 }
 
-export default function AiQueryBox() {
+// Context (2026-07-17) — lets the backend answer straight from what's already on screen instead
+// of always hitting the DB fresh (only for an exact match: Full Year period, same year/property —
+// see copilotkit/route.ts's contextMatches check for why it's this narrow). `kpBase` mirrors
+// KP_BASE.occ's own fields, already computed for whatever view/filters are currently active.
+export interface AiQueryContext {
+  view: string
+  filters: { year: string; period: string; property: string }
+  kpBase: { revM: number | null; occPct: number | null; adr: number | null; revpar: number | null; nights: number | null } | null
+}
+
+export default function AiQueryBox({ context }: { context?: AiQueryContext }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
@@ -49,7 +59,7 @@ export default function AiQueryBox() {
       const res = await fetch('/api/copilotkit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...messages, userMsg] }),
+        body: JSON.stringify({ messages: [...messages, userMsg], context }),
       })
       if (!res.ok) throw new Error('Backend not connected yet')
       const data = await res.json()

@@ -6,6 +6,7 @@ import SalesExecutiveSummaryDesign from '@/components/views/SalesExecutiveSummar
 import SalesExecAgentPanel from '@/components/SalesExecAgentPanel'
 import PropertyProfilePanel from '@/components/PropertyProfilePanel'
 import MarketSegmentProfilePanel from '@/components/MarketSegmentProfilePanel'
+import AiQueryBox, { type AiQueryContext } from '@/components/AiQueryBox'
 
 export interface SesFilters { period: 'm' | 'y' | 'a'; year: string; market: string; property: string }
 
@@ -110,6 +111,24 @@ export default function SalesExecutiveSummaryPage() {
     if (ctx.type === 'segment') setSelectedSegment(ctx.id)
   }
 
+  // AI Query Box context (2026-07-17) — same current-view-first pattern as src/app/page.tsx: lets
+  // the backend answer straight from what's already loaded for an exact match (Full Year, same
+  // year/property) instead of always re-querying. KP_BASE lives in the `kpis` section specifically
+  // (see SECTION_VIEW above) — charts/leaderboard don't carry it.
+  const aiContext: AiQueryContext = {
+    view: 'sales-exec-summary',
+    filters: { year: filters.year, period: filters.period, property: filters.property },
+    kpBase: kpis.data?.KP_BASE?.occ
+      ? {
+          revM: kpis.data.KP_BASE.occ.rev?.v ?? null,
+          occPct: kpis.data.KP_BASE.occ.occPct?.v ?? null,
+          adr: kpis.data.KP_BASE.occ.adr?.v ?? null,
+          revpar: kpis.data.KP_BASE.occ.revpar?.v ?? null,
+          nights: kpis.data.KP_BASE.occ.nights?.v ?? null,
+        }
+      : null,
+  }
+
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#EDEEE6' }}>
       <SalesExecutiveSummaryDesign
@@ -140,6 +159,7 @@ export default function SalesExecutiveSummaryPage() {
         onSelectProperty={handleSelectProperty}
         onSelectAgent={setSelectedAgentId}
       />
+      <AiQueryBox context={aiContext} />
     </Box>
   )
 }

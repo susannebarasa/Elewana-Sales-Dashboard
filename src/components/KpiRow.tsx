@@ -142,6 +142,22 @@ export default function KpiRow({ metrics, propMult = 1, periodMult = 1 }: Props)
         const diffStr = hasLy ? diffText(m.fmt, sv - (lv as number)) : undefined
         const arrow = chg !== undefined ? (chg >= 0 ? '▲' : '▼') : undefined
         const baselineTag = m.stly ? 'STLY' : m.budget ? 'Budget' : 'LY'
+        // Comparison-line color FIX (2026-07-17) — this used to reuse the card's own accent (`r`,
+        // absolute-value-vs-threshold) for the arrow/delta text too, which produces a genuinely
+        // confusing pairing whenever a metric is still "good" in absolute terms but moving the
+        // wrong way (or vice versa): live-swept every KPI with both thresholds and a real `ly` —
+        // 5 of 24 showed exactly this contradiction (e.g. Conversion Rate: 84% is comfortably
+        // above its 65% "good" threshold, card renders green, but it's DOWN from 92% STLY — the
+        // green card was pairing with a ▼ declining arrow; Cancellation Rate showed the mirror
+        // case, a red card with a genuinely-improving ▲ arrow). The card's own accent (`accent={r}`
+        // below) is intentionally left untouched — per-metric thresholds are deliberately tuned
+        // throughout this app as an "is this healthy right now" signal, and that shouldn't flip to
+        // green just because a terrible number ticked up slightly. Only the arrow/delta text gets
+        // its own direction-based color here, so it always agrees with what the arrow itself shows
+        // (▲ = green, ▼ = red, `inv` respected — e.g. Cancellation Rate's ▼ is green since falling
+        // is the improving direction there).
+        const improving = chg === undefined ? undefined : (m.inv ? chg <= 0 : chg >= 0)
+        const directionColor: KpiAccent = improving === undefined ? r : improving ? 'green' : 'red'
 
         return (
           <KpiCardShell
@@ -152,7 +168,7 @@ export default function KpiRow({ metrics, propMult = 1, periodMult = 1 }: Props)
             accent={r}
             comparison={
               chgStr !== undefined
-                ? { text: `${arrow} ${diffStr} (${chgStr}) vs ${baselineTag}`, color: r }
+                ? { text: `${arrow} ${diffStr} (${chgStr}) vs ${baselineTag}`, color: directionColor }
                 : undefined
             }
             labelInfo={

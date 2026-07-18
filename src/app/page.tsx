@@ -16,7 +16,7 @@ import OccView from '@/components/views/OccView'
 import AgentsView from '@/components/views/AgentsView'
 import PipelineView from '@/components/views/PipelineView'
 import ConsultView from '@/components/views/ConsultView'
-import AiQueryBox from '@/components/AiQueryBox'
+import AiQueryBox, { type AiQueryContext } from '@/components/AiQueryBox'
 import AgentProfilePanel from '@/components/AgentProfilePanel'
 import AgentPerformanceDrillPanel from '@/components/AgentPerformanceDrillPanel'
 import PropertyProfilePanel from '@/components/PropertyProfilePanel'
@@ -152,6 +152,23 @@ export default function Page() {
     return () => { cancelled = true; clearTimeout(timer) }
   }, [filters.year, filters.period, filters.channel, filters.market, filters.property])
 
+  // AI Query Box context (2026-07-17) — lets it answer straight from what's already loaded for
+  // an exact match (Full Year, same year/property) instead of always re-querying the DB. Only
+  // KP_BASE.occ's own already-computed fields, not the whole (large) DashboardData payload.
+  const aiContext: AiQueryContext = {
+    view: dashboardView ?? sub,
+    filters: { year: filters.year, period: filters.period, property: filters.property },
+    kpBase: data?.KP_BASE?.occ
+      ? {
+          revM: data.KP_BASE.occ.rev?.v ?? null,
+          occPct: data.KP_BASE.occ.occPct?.v ?? null,
+          adr: data.KP_BASE.occ.adr?.v ?? null,
+          revpar: data.KP_BASE.occ.revpar?.v ?? null,
+          nights: data.KP_BASE.occ.nights?.v ?? null,
+        }
+      : null,
+  }
+
   const renderContent = () => {
     // Finance (2026-07-16, moved to top-level nav per explicit instruction — was briefly a Sales
     // sub-tab, now lives at its own Sidebar entry alongside Sales/Marketing/Ops/GEX/MIS) — checked
@@ -235,7 +252,7 @@ export default function Page() {
           {renderContent()}
         </Box>
       </Box>
-      <AiQueryBox />
+      <AiQueryBox context={aiContext} />
       <AgentProfilePanel agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />
       <AgentPerformanceDrillPanel agentId={selectedPerformanceAgentId} onClose={() => setSelectedPerformanceAgentId(null)} />
       <PropertyProfilePanel propertyId={entityClick?.type === 'property' ? entityClick.id : null} onClose={() => setEntityClick(null)} />

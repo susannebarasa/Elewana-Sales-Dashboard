@@ -224,8 +224,13 @@ export default function PaceView({ data, filters, onSelectProperty }: Props) {
               <Box sx={{ display: 'grid', gridTemplateColumns: '84px 1fr 70px', alignItems: 'center', gap: 1 }}>
                 <Typography variant="h6" sx={{ fontSize: 15 }}>{m.mo}</Typography>
                 <Box sx={{ position: 'relative', height: 22, bgcolor: 'background.default', borderRadius: 1, overflow: 'visible' }}>
-                  {/* budget line */}
-                  <Box sx={{ position: 'absolute', left: `${m.bg}%`, top: -2, bottom: -2, width: 1.5, bgcolor: 'divider', zIndex: 4 }} />
+                  {/* budget line — position clamped to 0-100 (bgLinePos) so an over-budget month
+                      doesn't push the marker off the bar; the label below shows the real,
+                      unclamped % (see dashboard/route.ts's PF assembly comment). Omitted entirely
+                      when this property/month has no budget row at all (bgLinePos null). */}
+                  {m.bgLinePos !== null && (
+                    <Box sx={{ position: 'absolute', left: `${m.bgLinePos}%`, top: -2, bottom: -2, width: 1.5, bgcolor: 'divider', zIndex: 4 }} />
+                  )}
                   {/* confirmed bar */}
                   <Box sx={{
                     position: 'absolute', left: 0, top: 0, height: '100%',
@@ -250,7 +255,7 @@ export default function PaceView({ data, filters, onSelectProperty }: Props) {
                   </Box>
                 </Box>
                 <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'text.secondary', textAlign: 'right' }}>
-                  Bgt {m.bg}%
+                  {m.bg === null ? 'Bgt —' : `Bgt ${m.bg}%`}
                 </Typography>
               </Box>
             </Box>

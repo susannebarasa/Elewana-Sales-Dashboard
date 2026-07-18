@@ -11,7 +11,14 @@ export interface PipelineFutureItem {
   wt: number
   cv: string
   pval: string
-  bg: number
+  // Real Budget Room Revenue attainment % (2026-07-17 fix — was a constant ~99 that never
+  // touched budget data, see dashboard/route.ts's PF assembly comment). Null when that
+  // property/month has no budget row (e.g. Afrochic) rather than a fabricated 0%/100%. Can
+  // exceed 100 (over budget) — bgLinePos below is the separate, visually-clamped position.
+  bg: number | null
+  // 0-100 clamp of `bg`, for positioning the budget-line marker inside the bar without pushing
+  // it off-screen when a month is over budget. Null exactly when `bg` is null.
+  bgLinePos: number | null
 }
 
 export interface OccupancyData {
