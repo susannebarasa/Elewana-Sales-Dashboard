@@ -200,6 +200,44 @@ export function buildTotalExtrasRevenue(year: number, dateBasis: DateBasis, prop
   }
 }
 
+// Agent ADR (2026-07-20) — deliberately mirrors the Agent Leaderboard's own `nr_adr` field
+// (dashboard/route.ts's agRows `lg` subquery) EXACTLY, rather than reusing buildTotalRoomRevenue's
+// i.date_in/status='30'-only/DateBasis convention every other template in this file uses. Two real
+// differences from that convention, both intentional, both matching what the Leaderboard already
+// shows on screen for this same agent: (1) date field is r.date_created (booking creation date),
+// not i.date_in (stay date); (2) status is IN ('20','30') (Provisional + Confirmed), not '30' only.
+// No DateBasis/actualized-vs-otb concept here either — this is a full-calendar-year figure, same
+// as the Leaderboard's own default. Reusing the SAME formula matters: an ADR computed on a
+// different date field/status filter would silently disagree with the number already on screen for
+// the same agent, which is exactly the kind of drift this app's AI Query Box exists to avoid (see
+// the context short-circuit elsewhere in copilotkit/route.ts for the same principle).
+// No capacity/Occupancy%/RevPAR equivalent exists here — Available Room Nights (the denominator
+// those two need) is a per-PROPERTY externally-sourced figure with no per-agent breakdown, so this
+// intentionally returns ADR only, never bundled with Occupancy/RevPAR the way
+// buildOccupancyAdrRevpar is for properties/portfolio.
+export function buildAgentAdr(year: number, agentId: string): BuiltQuery {
+  const sql = `SELECT ROUND(roomrev.room_rev / GREATEST(nt.nt, 1)) AS adr
+    FROM (
+      SELECT SUM(GREATEST(DATEDIFF(i.date_out, i.date_in), 0)) AS nt
+      FROM reservations r JOIN itineraries i ON r.reservation_number = i.reservation_number
+      WHERE r.status IN ('20','30') AND ${dateInFullYear('r.date_created', year)}
+        AND r.agent_id = ? AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
+    ) nt
+    JOIN (
+      SELECT ${ROOM_REVENUE_SUM_SQL} AS room_rev
+      FROM reservations r JOIN itineraries i ON r.reservation_number = i.reservation_number
+      JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
+      LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
+      WHERE r.status IN ('20','30') AND ${dateInFullYear('r.date_created', year)}
+        AND r.agent_id = ? AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
+    ) roomrev`
+  return {
+    sql,
+    params: [agentId, NON_REV_IDS, RES_PREFIX, KES_RATE, agentId, NON_REV_IDS, RES_PREFIX],
+    caveat: 'Full calendar year, Provisional + Confirmed bookings by booking-creation date (same basis as the Agent Leaderboard\'s own ADR column) — not the actualized/YTD/on-the-books basis used elsewhere in this assistant. Occupancy % and RevPAR have no per-agent equivalent (Available Room Nights is a property-level figure only), so only ADR is reported here.',
+  }
+}
+
 function roomNightsSql(year: number, dateBasis: DateBasis, propertyId: string | null): BuiltQuery {
   const propertyFilter = propertyId ? ' AND i.property = ?' : ''
   const sql = `SELECT SUM(GREATEST(DATEDIFF(i.date_out, i.date_in), 0)) AS nights

@@ -7,7 +7,7 @@ import { pool } from '@/lib/db'
 import { runSafeQuery, assertReadOnlySelect, assertTablesAllowed, UnsafeQueryError, QueryTimeoutError } from '@/lib/aiQuery/sqlSafety'
 import {
   buildTotalRoomRevenue, buildTotalExtrasRevenue, buildRoomNightsSold, buildRevenueByProperty,
-  buildOccupancyAdrRevpar, buildSegmentOrChannelQuery, availableNightsFor, resolvePropertyName,
+  buildOccupancyAdrRevpar, buildAgentAdr, buildSegmentOrChannelQuery, availableNightsFor, resolvePropertyName,
   resolveAgentName, propertyNameById, SEGMENT_VALUES, CHANNEL_VALUES_LIST, buildNightsByProperty,
   occupancyPctByProperty, type DateBasis,
 } from '@/lib/aiQuery/templates'
@@ -62,8 +62,8 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'occupancy_adr_revpar',
-    description: 'Occupancy %, ADR, and/or RevPAR — always full-year 2026 on this dashboard regardless of what year is asked (capacity has no other year to compare against). Portfolio-wide or one property.',
-    input_schema: { type: 'object', properties: { propertyName: propertyParam }, required: [] },
+    description: 'Occupancy %, ADR, and/or RevPAR — always full-year 2026 on this dashboard regardless of what year is asked (capacity has no other year to compare against). Portfolio-wide, one property, OR one agent/trade partner (e.g. "Asilia\'s ADR") — an agent-scoped question only ever returns ADR, never Occupancy %/RevPAR (those need a per-property capacity figure that has no per-agent equivalent).',
+    input_schema: { type: 'object', properties: { propertyName: propertyParam, agentName: agentParam } , required: [] },
   },
   {
     name: 'yoy_growth',
@@ -129,7 +129,7 @@ You do not write SQL yourself for known metrics — you select the ONE tool that
 - "This year" with no other qualifier means the current calendar year (${new Date().getFullYear()}).
 - Date basis: default to 'ytd' for a plain "this year" question. Use 'actualized' only if the question specifically means completed/past stays. Use 'otb' only if the question clearly means the whole/full year, including future bookings.
 - Occupancy %/ADR/RevPAR are always full-year 2026 on this dashboard regardless of what's asked — use occupancy_adr_revpar and let its own caveat explain this.
-- total_room_revenue and total_extras_revenue both accept EITHER propertyName OR agentName (not both) — if the question names a trade partner/agent (e.g. "Asilia's Extras Revenue", "how much Room Revenue from Cheli & Peacock"), pass it as agentName, not propertyName.
+- total_room_revenue, total_extras_revenue, and occupancy_adr_revpar all accept EITHER propertyName OR agentName (not both) — if the question names a trade partner/agent (e.g. "Asilia's Extras Revenue", "Cheli & Peacock's ADR"), pass it as agentName, not propertyName. An agent-scoped occupancy_adr_revpar question only ever gets ADR back (no Occupancy %/RevPAR at agent level) — that's expected, not a failure.
 - Use conversation history to resolve "that", "it", "the same property", etc. from the prior turn.
 - For a "why" question about revenue, occupancy, OR ADR (e.g. "why is revenue down", "why is occupancy down", "why is Arusha's occupancy down", "why is ADR down") — use diagnose_change with the matching metric, not total_room_revenue/yoy_growth/occupancy_adr_revpar. Those only report the number; diagnose_change explains what drove it. diagnose_change only supports metric='revenue', 'occupancy', or 'adr' — if asked "why" about bookings or anything else, use cannot_answer instead of forcing diagnose_change onto a metric it doesn't support.
 - Only use fallback_query if truly nothing else fits — most real questions map to one of the named tools.
@@ -208,10 +208,10 @@ export async function POST(req: NextRequest) {
     } else {
       const propertyName = typeof input.propertyName === 'string' ? input.propertyName : undefined
       const agentName = typeof input.agentName === 'string' ? input.agentName : undefined
-      // agentName (2026-07-20) — only total_room_revenue/total_extras_revenue accept it; an agent
-      // scope always wins over a property scope if the model somehow passed both, since a question
-      // naming a trade partner is more specific than a portfolio/property one.
-      const isAgentScoped = (toolUse.name === 'total_room_revenue' || toolUse.name === 'total_extras_revenue') && !!agentName
+      // agentName (2026-07-20) — total_room_revenue/total_extras_revenue/occupancy_adr_revpar all
+      // accept it; an agent scope always wins over a property scope if the model somehow passed
+      // both, since a question naming a trade partner is more specific than a portfolio/property one.
+      const isAgentScoped = (toolUse.name === 'total_room_revenue' || toolUse.name === 'total_extras_revenue' || toolUse.name === 'occupancy_adr_revpar') && !!agentName
       const match = isAgentScoped ? { propertyId: null, propertyName: null, unresolved: false } : resolvePropertyName(propertyName)
       const agentMatch = isAgentScoped ? await resolveAgentName(agentName) : null
       const year = typeof input.year === 'number' ? input.year : new Date().getFullYear()
@@ -275,16 +275,26 @@ export async function POST(req: NextRequest) {
             break
           }
           case 'occupancy_adr_revpar': {
-            const q = buildOccupancyAdrRevpar(match.propertyId)
-            const row = await runSafeQuery<{ revenue: number; nights: number }>(pool, q.sql, q.params, QUERY_TIMEOUT_MS)
-            const available = availableNightsFor(match.propertyId)
-            const revenue = Number(row[0]?.revenue ?? 0)
-            const nights = Number(row[0]?.nights ?? 0)
-            const occPct = available > 0 ? (nights / available) * 100 : null
-            const revpar = available > 0 ? revenue / available : null
-            const adr = nights > 0 ? revenue / nights : null
-            resultSummary = `Occupancy: ${occPct !== null ? occPct.toFixed(1) + '%' : 'n/a'}, ADR: ${adr !== null ? '$' + Math.round(adr).toLocaleString() : 'n/a'}, RevPAR: ${revpar !== null ? '$' + revpar.toFixed(2) : 'n/a'}`
-            caveat = q.caveat + propertyCaveat
+            if (agentMatch?.agentId) {
+              // Agent-scoped: ADR only, via the Leaderboard-matching formula — no per-agent
+              // capacity figure exists for Occupancy %/RevPAR (see buildAgentAdr's own comment).
+              const q = buildAgentAdr(year, agentMatch.agentId)
+              const row = await runSafeQuery<{ adr: number | null }>(pool, q.sql, q.params, QUERY_TIMEOUT_MS)
+              const adr = row[0]?.adr != null ? Number(row[0].adr) : null
+              resultSummary = `ADR: ${adr !== null ? '$' + adr.toLocaleString() : 'n/a (no room nights in this period)'}`
+              caveat = q.caveat + agentCaveat
+            } else {
+              const q = buildOccupancyAdrRevpar(match.propertyId)
+              const row = await runSafeQuery<{ revenue: number; nights: number }>(pool, q.sql, q.params, QUERY_TIMEOUT_MS)
+              const available = availableNightsFor(match.propertyId)
+              const revenue = Number(row[0]?.revenue ?? 0)
+              const nights = Number(row[0]?.nights ?? 0)
+              const occPct = available > 0 ? (nights / available) * 100 : null
+              const revpar = available > 0 ? revenue / available : null
+              const adr = nights > 0 ? revenue / nights : null
+              resultSummary = `Occupancy: ${occPct !== null ? occPct.toFixed(1) + '%' : 'n/a'}, ADR: ${adr !== null ? '$' + Math.round(adr).toLocaleString() : 'n/a'}, RevPAR: ${revpar !== null ? '$' + revpar.toFixed(2) : 'n/a'}`
+              caveat = q.caveat + propertyCaveat + agentCaveat
+            }
             break
           }
           case 'yoy_growth': {
