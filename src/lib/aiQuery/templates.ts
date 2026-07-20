@@ -22,6 +22,7 @@ import {
 import { dateInFullYear, dateInTwoYearsThroughMonth, caseInYearMonthRange } from '@/lib/dateRange'
 import { buildAgentFilterSql, MARKET_SEGMENT_VALUES, CHANNEL_VALUES } from '@/lib/agentSegments'
 import { getPropertyBudget, getPortfolioBudget } from '@/lib/budget'
+import { query } from '@/lib/db'
 
 const NON_REV_IDS = Array.from(NON_REVENUE_RATE_TYPE_IDS)
 const RES_PREFIX = EXCLUDED_RESERVATION_PREFIX
@@ -70,6 +71,58 @@ export function resolvePropertyName(name?: string | null): PropertyMatch {
   return { propertyId: null, propertyName: name, unresolved: true }
 }
 
+export interface AgentMatch {
+  agentId: string | null
+  agentName: string | null
+  /** True if the caller supplied a name and it did NOT resolve — the answer should say so. */
+  unresolved: boolean
+  /** True when the name matched more than one live agent — the caller picked the closest one. */
+  ambiguous: boolean
+}
+
+// Agent names have no static list to match against the way the 18 properties do (thousands of
+// agents, live in the DB only) — so this queries `agents` directly, same table/exclusions Find
+// Agent search (agents/search/route.ts) already uses, rather than the static agentSegments.json
+// snapshot (that file is agent-name-keyed for Channel/Market Segment lookup only, and per the
+// 2026-07-20 investigation into Faith's segment file, is known to drift from live agent names).
+// Tries an exact case-insensitive match first; falls back to substring LIKE. When more than one
+// live agent shares the substring (confirmed live: "Asilia" matches "Asilia Africa Limited",
+// "ASILIA KENYA LIMITED", and "Asilia Lodges & Camps Ltd"), pick the one with the most confirmed
+// bookings ever, NOT the shortest name — an earlier version used name-length as the tie-break and
+// it picked "ASILIA KENYA LIMITED" (2 all-time cancelled bookings, effectively a dead duplicate)
+// over "Asilia Africa Limited" (the real, ~$2.9M/year trade partner), silently returning $0.
+// Flags `ambiguous: true` so the caller can say which one it picked rather than guessing silently.
+export async function resolveAgentName(name?: string | null): Promise<AgentMatch> {
+  if (!name || !name.trim()) return { agentId: null, agentName: null, unresolved: false, ambiguous: false }
+  const needle = name.trim().toLowerCase()
+
+  const exactRows = await query<{ agent_id: string; agent_name: string }>(
+    `SELECT agent_id, agent_name FROM agents
+     WHERE LOWER(TRIM(agent_name)) = ?
+       AND agent_id NOT IN (?) AND agent_name NOT IN (?)
+       AND (LOWER(agent_name) NOT LIKE ? OR agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
+     LIMIT 1`,
+    [needle, AGENT_IDS, AGENT_NAMES, AGENT_NAME_LIKE]
+  )
+  if (exactRows[0]) return { agentId: exactRows[0].agent_id, agentName: exactRows[0].agent_name, unresolved: false, ambiguous: false }
+
+  const likeRows = await query<{ agent_id: string; agent_name: string; activity_ct: number }>(
+    `SELECT a.agent_id, a.agent_name, COUNT(r.reservation_number) AS activity_ct
+     FROM agents a
+     LEFT JOIN reservations r ON r.agent_id = a.agent_id AND r.status = '30'
+     WHERE a.agent_name LIKE ?
+       AND a.agent_id NOT IN (?) AND a.agent_name NOT IN (?)
+       AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))
+     GROUP BY a.agent_id, a.agent_name
+     ORDER BY activity_ct DESC
+     LIMIT 5`,
+    [`%${name.trim()}%`, AGENT_IDS, AGENT_NAMES, AGENT_NAME_LIKE]
+  )
+  if (likeRows.length === 0) return { agentId: null, agentName: name, unresolved: true, ambiguous: false }
+  const best = likeRows[0]
+  return { agentId: best.agent_id, agentName: best.agent_name, unresolved: false, ambiguous: likeRows.length > 1 }
+}
+
 function propertyNameById(propertyId: string): string | null {
   for (const [name, cap] of Object.entries(PROPERTY_ROOM_COUNTS)) {
     if (cap.propertyId === propertyId) return name
@@ -105,16 +158,20 @@ function dateBasisCaveat(dateBasis: DateBasis, budgetNote: boolean): string {
 // exclusions. dateBasis 'actualized' caps at i.date_out <= CURDATE() (stays already completed,
 // same convention as the dashboard's own "Room Revenue (Actualized)" KPI); 'otb' is booking-
 // inclusive (matches Budget comparisons — same basis as kpiTotalRevFullYear).
-export function buildTotalRoomRevenue(year: number, dateBasis: DateBasis, propertyId: string | null): BuiltQuery {
+// agentId (2026-07-20) — resolved via resolveAgentName, already excludes test/placeholder/direct
+// accounts at resolution time, so no extra agent-level exclusion is needed here on top of it.
+export function buildTotalRoomRevenue(year: number, dateBasis: DateBasis, propertyId: string | null, agentId: string | null = null): BuiltQuery {
   const propertyFilter = propertyId ? ' AND i.property = ?' : ''
+  const agentFilter = agentId ? ' AND r.agent_id = ?' : ''
   const sql = `SELECT ${ROOM_REVENUE_SUM_SQL} AS revenue
     FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
     JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
     LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
     WHERE r.status = '30' AND ${dateInFullYear('i.date_in', year)} AND i.date_out > i.date_in
-      AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${dateBasisCap(dateBasis)}${propertyFilter}`
+      AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${dateBasisCap(dateBasis)}${propertyFilter}${agentFilter}`
   const params: unknown[] = [KES_RATE, NON_REV_IDS, RES_PREFIX]
   if (propertyId) params.push(propertyId)
+  if (agentId) params.push(agentId)
   return { sql, params, caveat: dateBasisCaveat(dateBasis, true) }
 }
 
@@ -123,16 +180,20 @@ export function buildTotalRoomRevenue(year: number, dateBasis: DateBasis, proper
 // own kpiRevNights does — that requires a second cross-joined subquery per property/date-basis
 // combination; out of scope for a quick conversational answer. The caveat below says so rather
 // than silently under-counting.
-export function buildTotalExtrasRevenue(year: number, dateBasis: DateBasis, propertyId: string | null): BuiltQuery {
+// agentId (2026-07-20) — same resolveAgentName-based scoping as buildTotalRoomRevenue above; see
+// that function's comment for why no extra agent-exclusion filter is needed here.
+export function buildTotalExtrasRevenue(year: number, dateBasis: DateBasis, propertyId: string | null, agentId: string | null = null): BuiltQuery {
   const propertyFilter = propertyId ? ' AND i.property = ?' : ''
+  const agentFilter = agentId ? ' AND r.agent_id = ?' : ''
   const sql = `SELECT ${EXTRAS_SUM_SQL} AS extras
     FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
     JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
     LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
     WHERE r.status = '30' AND ${dateInFullYear('i.date_in', year)} AND i.date_out > i.date_in
-      AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${dateBasisCap(dateBasis)}${propertyFilter}`
+      AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${dateBasisCap(dateBasis)}${propertyFilter}${agentFilter}`
   const params: unknown[] = [KES_RATE, NON_REV_IDS, RES_PREFIX]
   if (propertyId) params.push(propertyId)
+  if (agentId) params.push(agentId)
   return {
     sql, params,
     caveat: `${dateBasisCaveat(dateBasis, false)} Also covers rate-components-classified Extras only — Day Use ancillary revenue recorded in the separate extras table is not included, so this is a floor, not the true total.`,

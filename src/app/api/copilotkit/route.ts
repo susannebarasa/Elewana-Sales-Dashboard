@@ -8,8 +8,8 @@ import { runSafeQuery, assertReadOnlySelect, assertTablesAllowed, UnsafeQueryErr
 import {
   buildTotalRoomRevenue, buildTotalExtrasRevenue, buildRoomNightsSold, buildRevenueByProperty,
   buildOccupancyAdrRevpar, buildSegmentOrChannelQuery, availableNightsFor, resolvePropertyName,
-  propertyNameById, SEGMENT_VALUES, CHANNEL_VALUES_LIST, buildNightsByProperty, occupancyPctByProperty,
-  type DateBasis,
+  resolveAgentName, propertyNameById, SEGMENT_VALUES, CHANNEL_VALUES_LIST, buildNightsByProperty,
+  occupancyPctByProperty, type DateBasis,
 } from '@/lib/aiQuery/templates'
 import { assembleDiagnoseChangeBundle, buildDiagnoseChangeSystemPrompt } from '@/lib/aiQuery/diagnoseChange'
 
@@ -41,18 +41,19 @@ interface AiQueryContext {
 const dateBasisEnum = { type: 'string' as const, enum: ['actualized', 'ytd', 'otb'] as const, description: "'actualized' = only stays that have already completed. 'ytd' = all confirmed bookings from Jan 1 through today (\"how are we doing so far this year\") — use this as the DEFAULT for a plain, unqualified question like \"what's our revenue this year\". 'otb' = the ENTIRE calendar year including bookings for stays later in the year that haven't happened yet — only use this when the question clearly asks about the whole/full year, not just \"this year\" casually." }
 const yearParam = { type: 'integer' as const, description: 'Calendar year, e.g. 2026. Default to the current year if unspecified.' }
 const propertyParam = { type: 'string' as const, description: 'Property name as mentioned by the user, if any (e.g. "Arusha Coffee Lodge", "Tortilis"). Omit for portfolio-wide.' }
+const agentParam = { type: 'string' as const, description: 'Agent/trade-partner name as mentioned by the user, if any (e.g. "Asilia", "Cheli & Peacock"). Omit for portfolio-wide. Mutually exclusive with propertyName in practice — a question is either about one property or one agent, not both.' }
 const limitParam = { type: 'integer' as const, description: 'How many rows to return, default 5.' }
 
 const TOOLS: Tool[] = [
   {
     name: 'total_room_revenue',
-    description: 'Total Room Revenue (never includes Extras) for a year, optionally one property.',
-    input_schema: { type: 'object', properties: { year: yearParam, dateBasis: dateBasisEnum, propertyName: propertyParam }, required: ['year', 'dateBasis'] },
+    description: 'Total Room Revenue (never includes Extras) for a year, optionally one property OR one agent/trade partner (e.g. "Asilia\'s Room Revenue").',
+    input_schema: { type: 'object', properties: { year: yearParam, dateBasis: dateBasisEnum, propertyName: propertyParam, agentName: agentParam }, required: ['year', 'dateBasis'] },
   },
   {
     name: 'total_extras_revenue',
-    description: 'Total Extras Revenue (ancillary — F&B, activities, transfers; never Room Revenue) for a year, optionally one property.',
-    input_schema: { type: 'object', properties: { year: yearParam, dateBasis: dateBasisEnum, propertyName: propertyParam }, required: ['year', 'dateBasis'] },
+    description: 'Total Extras Revenue (ancillary — F&B, activities, transfers; never Room Revenue) for a year, optionally one property OR one agent/trade partner (e.g. "Asilia\'s Extras Revenue").',
+    input_schema: { type: 'object', properties: { year: yearParam, dateBasis: dateBasisEnum, propertyName: propertyParam, agentName: agentParam }, required: ['year', 'dateBasis'] },
   },
   {
     name: 'room_nights_sold',
@@ -128,6 +129,7 @@ You do not write SQL yourself for known metrics — you select the ONE tool that
 - "This year" with no other qualifier means the current calendar year (${new Date().getFullYear()}).
 - Date basis: default to 'ytd' for a plain "this year" question. Use 'actualized' only if the question specifically means completed/past stays. Use 'otb' only if the question clearly means the whole/full year, including future bookings.
 - Occupancy %/ADR/RevPAR are always full-year 2026 on this dashboard regardless of what's asked — use occupancy_adr_revpar and let its own caveat explain this.
+- total_room_revenue and total_extras_revenue both accept EITHER propertyName OR agentName (not both) — if the question names a trade partner/agent (e.g. "Asilia's Extras Revenue", "how much Room Revenue from Cheli & Peacock"), pass it as agentName, not propertyName.
 - Use conversation history to resolve "that", "it", "the same property", etc. from the prior turn.
 - For a "why" question about revenue, occupancy, OR ADR (e.g. "why is revenue down", "why is occupancy down", "why is Arusha's occupancy down", "why is ADR down") — use diagnose_change with the matching metric, not total_room_revenue/yoy_growth/occupancy_adr_revpar. Those only report the number; diagnose_change explains what drove it. diagnose_change only supports metric='revenue', 'occupancy', or 'adr' — if asked "why" about bookings or anything else, use cannot_answer instead of forcing diagnose_change onto a metric it doesn't support.
 - Only use fallback_query if truly nothing else fits — most real questions map to one of the named tools.
@@ -205,16 +207,29 @@ export async function POST(req: NextRequest) {
       }
     } else {
       const propertyName = typeof input.propertyName === 'string' ? input.propertyName : undefined
-      const match = resolvePropertyName(propertyName)
+      const agentName = typeof input.agentName === 'string' ? input.agentName : undefined
+      // agentName (2026-07-20) — only total_room_revenue/total_extras_revenue accept it; an agent
+      // scope always wins over a property scope if the model somehow passed both, since a question
+      // naming a trade partner is more specific than a portfolio/property one.
+      const isAgentScoped = (toolUse.name === 'total_room_revenue' || toolUse.name === 'total_extras_revenue') && !!agentName
+      const match = isAgentScoped ? { propertyId: null, propertyName: null, unresolved: false } : resolvePropertyName(propertyName)
+      const agentMatch = isAgentScoped ? await resolveAgentName(agentName) : null
       const year = typeof input.year === 'number' ? input.year : new Date().getFullYear()
       const dateBasis = (input.dateBasis === 'actualized' || input.dateBasis === 'otb' ? input.dateBasis : 'ytd') as DateBasis
       const propertyCaveat = match.unresolved ? ` (couldn't match "${propertyName}" to a known property — showing portfolio-wide instead)` : ''
+      const agentCaveat = !agentMatch ? ''
+        : agentMatch.unresolved ? ` (couldn't match "${agentName}" to a known agent — showing portfolio-wide instead)`
+        : agentMatch.ambiguous ? ` (multiple agents matched "${agentName}" — showing the closest match, ${agentMatch.agentName})`
+        : ` — agent: ${agentMatch.agentName}`
 
       // Context short-circuit — only when the currently loaded page already has this EXACT figure,
       // so we never guess at a narrower/wider basis than what's actually on screen. Covers the
       // common "what am I looking at right now" follow-up without a redundant DB round-trip.
+      // Never applies when agent-scoped — KP_BASE context is portfolio/property-level only, never
+      // agent-level, so contextPropertyMatches is forced false rather than risking a false match.
       const contextProperty = context?.filters?.property
-      const contextPropertyMatches = (!match.propertyId && (!contextProperty || contextProperty === 'all')) || (!!match.propertyId && match.propertyId === contextProperty)
+      const contextPropertyMatches = !isAgentScoped
+        && ((!match.propertyId && (!contextProperty || contextProperty === 'all')) || (!!match.propertyId && match.propertyId === contextProperty))
       // KP_BASE.occ.rev/nights are always actualized-basis regardless of the MTD/YTD/Full-Year
       // toggle — actualized stays can't exceed "today" no matter the period's nominal upper bound,
       // so 'y' (YTD) and 'a' (Full Year) both reduce to the same actualized total our own
@@ -239,17 +254,17 @@ export async function POST(req: NextRequest) {
       } else {
         switch (toolUse.name) {
           case 'total_room_revenue': {
-            const q = buildTotalRoomRevenue(year, dateBasis, match.propertyId)
+            const q = buildTotalRoomRevenue(year, dateBasis, match.propertyId, agentMatch?.agentId ?? null)
             const row = await runSafeQuery<{ revenue: number }>(pool, q.sql, q.params, QUERY_TIMEOUT_MS)
             resultSummary = `Room Revenue: ${fmtDollar(Number(row[0]?.revenue ?? 0))}`
-            caveat = q.caveat + propertyCaveat
+            caveat = q.caveat + propertyCaveat + agentCaveat
             break
           }
           case 'total_extras_revenue': {
-            const q = buildTotalExtrasRevenue(year, dateBasis, match.propertyId)
+            const q = buildTotalExtrasRevenue(year, dateBasis, match.propertyId, agentMatch?.agentId ?? null)
             const row = await runSafeQuery<{ extras: number }>(pool, q.sql, q.params, QUERY_TIMEOUT_MS)
             resultSummary = `Extras Revenue: ${fmtDollar(Number(row[0]?.extras ?? 0))}`
-            caveat = q.caveat + propertyCaveat
+            caveat = q.caveat + propertyCaveat + agentCaveat
             break
           }
           case 'room_nights_sold': {
