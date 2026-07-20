@@ -285,14 +285,25 @@ export async function POST(req: NextRequest) {
               caveat = q.caveat + agentCaveat
             } else {
               const q = buildOccupancyAdrRevpar(match.propertyId)
-              const row = await runSafeQuery<{ revenue: number; nights: number }>(pool, q.sql, q.params, QUERY_TIMEOUT_MS)
+              const row = await runSafeQuery<{ revenue: number; nights_incl_day_use: number; revenue_actualized: number; nights_actualized: number }>(pool, q.sql, q.params, QUERY_TIMEOUT_MS)
               const available = availableNightsFor(match.propertyId)
+              // revenue (OTB) feeds RevPAR only; nightsInclDayUse (OTB, Qlik convention) feeds
+              // Occupancy % only — both period-invariant, unchanged. ADR now uses the SEPARATE
+              // Actualized revenue/nights pair (2026-07-20 fix), matching the dashboard's own ADR
+              // KPI basis instead of On-the-books — see buildOccupancyAdrRevpar's own comment.
               const revenue = Number(row[0]?.revenue ?? 0)
-              const nights = Number(row[0]?.nights ?? 0)
-              const occPct = available > 0 ? (nights / available) * 100 : null
+              const nightsInclDayUse = Number(row[0]?.nights_incl_day_use ?? 0)
+              const revenueActualized = Number(row[0]?.revenue_actualized ?? 0)
+              const nightsActualized = Number(row[0]?.nights_actualized ?? 0)
+              const occPct = available > 0 ? (nightsInclDayUse / available) * 100 : null
               const revpar = available > 0 ? revenue / available : null
-              const adr = nights > 0 ? revenue / nights : null
-              resultSummary = `Occupancy: ${occPct !== null ? occPct.toFixed(1) + '%' : 'n/a'}, ADR: ${adr !== null ? '$' + Math.round(adr).toLocaleString() : 'n/a'}, RevPAR: ${revpar !== null ? '$' + revpar.toFixed(2) : 'n/a'}`
+              const adr = nightsActualized > 0 ? revenueActualized / nightsActualized : null
+              // "(Actualized)" is baked directly into the ADR figure itself (2026-07-20), not left
+              // to the caveat alone — the final polish pass only mentions a caveat "if relevant",
+              // which isn't a strong enough guarantee that every answer states ADR's basis. Putting
+              // it inline in the reported number itself means it survives the polish pass as part
+              // of the data being paraphrased, not a footnote that can be judged skippable.
+              resultSummary = `Occupancy: ${occPct !== null ? occPct.toFixed(1) + '%' : 'n/a'}, ADR: ${adr !== null ? '$' + Math.round(adr).toLocaleString() + ' (Actualized)' : 'n/a'}, RevPAR: ${revpar !== null ? '$' + revpar.toFixed(2) : 'n/a'}`
               caveat = q.caveat + propertyCaveat + agentCaveat
             }
             break
@@ -387,7 +398,7 @@ export async function POST(req: NextRequest) {
       max_tokens: isDiagnoseChange ? 800 : 400,
       system: isDiagnoseChange
         ? `You are lightly copy-editing a BI analyst's answer for Elewana Collection for tone/flow only. The "Data" below is already the complete, correct, final analysis — do not add, remove, reorder, or reinterpret any claim in it, and do not add any new cause or number. Preserve every named driver's exact $ and % figures inline, exactly as given — never paraphrase a specific figure into vaguer language (e.g. never turn "Kilindi -$871k (-29.5%)" into "one property saw a notable decline"). If it already reads well, return it essentially unchanged.`
-        : `You are a helpful BI assistant for Elewana Collection. Write a clear, concise, exec-facing answer in 1-3 sentences using the data given. If a caveat is provided and it would change how someone should read the number, mention it naturally in a phrase — don't bolt it on as a disclaimer paragraph. Never invent numbers beyond what's given.`,
+        : `You are a helpful BI assistant for Elewana Collection. Write a clear, concise, exec-facing answer in 1-3 sentences using the data given. If a caveat is provided and it would change how someone should read the number, mention it naturally in a phrase — don't bolt it on as a disclaimer paragraph. Never invent numbers beyond what's given. If the Data line itself labels a figure's basis inline in parentheses (e.g. "$996 (Actualized)") — always state that basis in your answer, every time, in your own words if you like ("on an actualized basis," "for completed stays") — never drop it, even if you judge the rest of the caveat skippable.`,
       messages: [
         ...recentHistory.slice(0, -1),
         { role: 'user', content: `Question: ${question}\n\nData: ${resultSummary}${caveat ? `\n\nCaveat to weave in naturally if relevant: ${caveat}` : ''}` },

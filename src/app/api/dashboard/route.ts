@@ -947,13 +947,26 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // bookings already get real DATEDIFF-based nights from the `nights` subquery above.
       // WHERE's day-use property restriction moved into each aggregate's own CASE so the LEFT
       // JOIN can reach every reservation, not just Day Use legs.
+      // FIX (2026-07-20, Day Use double-count): day_use_nights counted EVERY Day-Use-flagged leg
+      // (property+accommodation_type match) unconditionally, even ones that ALSO pass the `nights`
+      // subquery's `i.date_out > i.date_in` filter and get their real DATEDIFF counted there too —
+      // confirmed live: 13 ACL legs are Day-Use-flagged but span 1-2 real calendar days, so they
+      // were counted BOTH via their real DATEDIFF (in `nights`) AND as a flat +1 (in `dayuse`),
+      // double-counting 14 nights (36,658 vs the correct 36,624). Fixed by excluding Day-Use-
+      // flagged legs from `nights`' DATEDIFF sum entirely (`AND NOT dayUseLegCase`) — they carry $0
+      // Room Revenue regardless of date span, so this doesn't move `adr` (rev_raw is unaffected;
+      // this in fact makes the existing "Day Use excluded from ADR" principle fully consistent,
+      // since these 13 edge-case rows had been slipping into ADR's denominator before). Now
+      // day_use_nights can go back to a flat COUNT of every Day-Use-flagged leg (no `<=` needed) —
+      // total_nights + day_use_nights is now bit-identical to revparNightsRows/
+      // roomNightsInclDayUseSql's single-CASE formula (2026-07-20 session), never double-counting.
       kpiRevNights: () => queryOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>(
         `SELECT nights.total_nights, rev.rev_raw, rev.extras_raw, dayuse.extras_table_revenue, dayuse.day_use_nights,
           ROUND(rev.rev_raw/GREATEST(nights.total_nights,1)) AS adr
         FROM (
           SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in AND NOT ${dayUseLegCase('i')}
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?${AND_P}
         ) nights
@@ -968,14 +981,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         ) rev
         CROSS JOIN (
           SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table_revenue,
-            COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} THEN i2.itinerary_id END) AS day_use_nights
+            COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} AND r2.rate_type NOT IN (?) AND r2.reservation_number NOT LIKE ? THEN i2.itinerary_id END) AS day_use_nights
           FROM itineraries i2
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
           WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', cy, monthLo, monthHi)} AND i2.date_in <= CURDATE()${AND_P2}
         ) dayuse`,
-        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
+        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI: total revenue, full-year basis — dedicated denominator for Trade Partners'
@@ -996,12 +1009,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // `i.date_out <= CURDATE()` cap — plus day_use_nights added to the `dayuse` subquery the
       // same way kpiRevNights adds it, so total_nights (nights.total_nights + dayuse.day_use_nights
       // in JS below) is the booking-inclusive sibling of totalNights, same basis as totalRevFullYearM.
+      // FIX (2026-07-20, Day Use double-count): same fix as kpiRevNights above — see its comment.
       kpiTotalRevFullYear: () => queryOne<{ rev_raw: number; extras_raw: number; extras_table_revenue: number; total_nights: number; day_use_nights: number }>(
         `SELECT nights.total_nights, rev.rev_raw, rev.extras_raw, dayuse.extras_table_revenue, dayuse.day_use_nights
         FROM (
           SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', cy, monthLo, monthHi)} AND i.date_out > i.date_in AND NOT ${dayUseLegCase('i')}
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?${AND_P}
         ) nights
@@ -1016,14 +1030,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         ) rev
         CROSS JOIN (
           SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table_revenue,
-            COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} THEN i2.itinerary_id END) AS day_use_nights
+            COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} AND r2.rate_type NOT IN (?) AND r2.reservation_number NOT LIKE ? THEN i2.itinerary_id END) AS day_use_nights
           FROM itineraries i2
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
           WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', cy, monthLo, monthHi)}${AND_P2}
         ) dayuse`,
-        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
+        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI: actual Room Revenue for "Pace vs Budget" — MTD (the real current calendar month
@@ -1382,13 +1396,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // as kpiRevNights above, cy -> ly.
       // FIX (2026-07-13, Day Use nights gap): same day_use_nights addition as kpiRevNights above.
       // FIX (2026-07-13, extras-table revenue): same broadening as kpiRevNights above.
+      // FIX (2026-07-20, Day Use double-count): same fix as kpiRevNights above — see its comment.
       kpiRevNightsLy: () => queryOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>(
         `SELECT nights.total_nights, rev.rev_raw, rev.extras_raw, dayuse.extras_table_revenue, dayuse.day_use_nights,
           ROUND(rev.rev_raw/GREATEST(nights.total_nights,1)) AS adr
         FROM (
           SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
           FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, monthLo, monthHi)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in AND NOT ${dayUseLegCase('i')}
             AND r.rate_type NOT IN (?)
             AND r.reservation_number NOT LIKE ?${AND_P}
         ) nights
@@ -1403,14 +1418,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         ) rev
         CROSS JOIN (
           SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table_revenue,
-            COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} THEN i2.itinerary_id END) AS day_use_nights
+            COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} AND r2.rate_type NOT IN (?) AND r2.reservation_number NOT LIKE ? THEN i2.itinerary_id END) AS day_use_nights
           FROM itineraries i2
           JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
           LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
           LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
           WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', ly, monthLo, monthHi)} AND i2.date_in <= CURDATE()${AND_P2}
         ) dayuse`,
-        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE]
+        [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
       // KPI LY: avg lead time, same-period prior year — real YoY basis for pace.lead.
@@ -1632,10 +1647,24 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // below (status='30', YEAR(i.date_in)=2026, i.date_out>i.date_in, same exclusions) so its
       // Room Revenue can be paired with these nights without a basis mismatch — RevPAR =
       // budgetActualByPropRows' rev ÷ PROPERTY_ROOM_COUNTS' Dennis-confirmed Available Room Nights.
-      revparNightsRows: () => query<{ property_id: string; sold_nights: number }>(
-        `SELECT i.property AS property_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS sold_nights
+      // sold_nights_incl_day_use (2026-07-20) — Qlik's own convention counts Day Rooms in Room
+      // Nights (same fix already applied to KP_BASE.occ.nights' totalNights, 2026-07-13); this was
+      // the one other place "sold nights" was computed and had drifted from that convention (the
+      // AI Query Box's room_nights_sold tool had the same gap — see templates.ts). Day Use legs
+      // carry date_out=date_in (0 under DATEDIFF) despite a room genuinely being sold, so they need
+      // the `OR dayUseLegCase` added to the WHERE clause (not just the SELECT) or they'd be filtered
+      // out entirely by `i.date_out > i.date_in` before ever reaching the CASE below.
+      // Kept SEPARATE from the original DATEDIFF-only `sold_nights` column, which stays the ADR
+      // denominator (unchanged) — Day Use legs have $0 Room Revenue in this rate_components-based
+      // roomRevenue figure, so folding them into ADR's denominator would dilute ADR with no matching
+      // numerator, exactly the reasoning kpiRevNights' own `adr` field already follows (computed
+      // against the pre-Day-Use nights.total_nights, never totalNights).
+      revparNightsRows: () => query<{ property_id: string; sold_nights: number; sold_nights_incl_day_use: number }>(
+        `SELECT i.property AS property_id,
+            SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS sold_nights,
+            SUM(CASE WHEN ${dayUseLegCase('i')} THEN 1 ELSE GREATEST(DATEDIFF(i.date_out,i.date_in),0) END) AS sold_nights_incl_day_use
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status = '30' AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
+        WHERE r.status = '30' AND ${dateInFullYear('i.date_in', 2026)} AND (i.date_out > i.date_in OR ${dayUseLegCase('i')})
           AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?
         GROUP BY i.property`,
         [NON_REV_IDS, RES_PREFIX]
@@ -2084,7 +2113,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const kpiForecastStlyRows = qArr<{ yr: number; mo: number; final_nights_raw: number; final_day_use_nights: number; onbooks_nights_raw: number; onbooks_day_use_nights: number }>('kpiForecastStlyRows')
     const kpiForecastPace = qOne<{ this_year_forward_nights: number; last_year_forward_nights_same_leadtime: number }>('kpiForecastPace')
     const kpiForecastCancelLyFullYear = qOne<{ cancelled_ct: number; total_ct: number }>('kpiForecastCancelLyFullYear')
-    const revparNightsRows = qArr<{ property_id: string; sold_nights: number }>('revparNightsRows')
+    const revparNightsRows = qArr<{ property_id: string; sold_nights: number; sold_nights_incl_day_use: number }>('revparNightsRows')
     const agentPaceRows = qArr<{ agent_id: string; agent_name: string; ty_nights: number; ly_nights_same_leadtime: number }>('agentPaceRows')
     const cancelDriverNightsRows = qArr<{ agent_id: string; agent_name: string; cancelled_bookings: number; nights_lost: number }>('cancelDriverNightsRows')
     const cancelDriverRevRows = qArr<{ agent_id: string; room_rev_lost: number }>('cancelDriverRevRows')
@@ -2499,7 +2528,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // fetched at the top of the handler, so this move has no effect on the blocks below beyond
     // no longer re-declaring them there.
     const actualByPropMap = new Map(budgetActualByPropRows.map((r) => [r.property_id, n(r.rev)]))
+    // revparNightsMap stays DATEDIFF-only (excludes Day Use) — the ADR denominator, unchanged; see
+    // revparNightsRows' own comment for why Day Use must NOT be folded into ADR's nights.
     const revparNightsMap = new Map(revparNightsRows.map((r) => [r.property_id, n(r.sold_nights)]))
+    // revparNightsInclDayUseMap (2026-07-20) — Day-Use-inclusive, same convention as
+    // KP_BASE.occ.nights' totalNights. This is the "Sold Nights" figure actually displayed and the
+    // Occupancy % numerator everywhere below — Room Nights Sold/Occupancy %/RevPAR should now all
+    // agree on one Room Nights definition (RevPAR's own formula, revenue ÷ available, never
+    // consumed sold nights at all, so it needs no formula change — only this shared nights data
+    // needs to stop disagreeing with the Room Nights Sold KPI card).
+    const revparNightsInclDayUseMap = new Map(revparNightsRows.map((r) => [r.property_id, n(r.sold_nights_incl_day_use)]))
 
     // Portfolio RevPAR / Occupancy % (2026-07-15, Sales Executive Summary KPI row) — aggregated
     // as sum(roomRevenue)/sum(availableNights) and sum(soldNights)/sum(availableNights)*100
@@ -2516,18 +2554,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       if (!cap.propertyId || PORTFOLIO_AGG_EXCLUDE_IDS.has(cap.propertyId)) continue
       portfolioRevenueSum += actualByPropMap.get(cap.propertyId) ?? 0
       portfolioAvailableSum += cap.roomnightsAvailable
-      portfolioSoldSum += revparNightsMap.get(cap.propertyId) ?? 0
+      portfolioSoldSum += revparNightsInclDayUseMap.get(cap.propertyId) ?? 0
     }
     // Property (2026-07-16, "no exceptions" pass): genuinely recompute scoped to the selected
     // property rather than relabeling the portfolio-wide sum — reuses actualByPropMap/
-    // revparNightsMap, the exact same per-property maps Property Performance's RevPAR table
-    // already draws from, so this can't disagree with that table's own numbers for the property.
+    // revparNightsInclDayUseMap, the exact same per-property maps Property Performance's RevPAR
+    // table already draws from, so this can't disagree with that table's own numbers for the
+    // property.
     const selectedCap = property !== 'all'
       ? Object.values(PROPERTY_ROOM_COUNTS).find((cap) => cap.propertyId === property)
       : undefined
     const revenueSum = selectedCap ? (actualByPropMap.get(property) ?? 0) : portfolioRevenueSum
     const availableSum = selectedCap ? selectedCap.roomnightsAvailable : portfolioAvailableSum
-    const soldSum = selectedCap ? (revparNightsMap.get(property) ?? 0) : portfolioSoldSum
+    const soldSum = selectedCap ? (revparNightsInclDayUseMap.get(property) ?? 0) : portfolioSoldSum
     const portfolioRevpar = availableSum > 0 ? revenueSum / availableSum : 0
     const portfolioOccPct = availableSum > 0 ? (soldSum / availableSum) * 100 : 0
     const revparOccCaption = selectedPropertyName ?? 'portfolio-wide, 15 properties'
@@ -2767,10 +2806,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         }
       }
       const roomRevenue = actualByPropMap.get(cap.propertyId) ?? 0
-      const soldNights = revparNightsMap.get(cap.propertyId) ?? 0
+      // adrNights (DATEDIFF-only, excludes Day Use) stays ADR's denominator — Day Use legs carry
+      // $0 Room Revenue here, so folding them in would dilute ADR with no matching numerator.
+      // soldNights (2026-07-20, Day-Use-inclusive) is the displayed "Sold Nights" figure and
+      // Occupancy %'s numerator — see revparNightsRows' own comment for the full reasoning.
+      const adrNights = revparNightsMap.get(cap.propertyId) ?? 0
+      const soldNights = revparNightsInclDayUseMap.get(cap.propertyId) ?? 0
       const availableNights = cap.roomnightsAvailable
       const revpar = availableNights > 0 ? roomRevenue / availableNights : null
-      const adr = soldNights > 0 ? roomRevenue / soldNights : null
+      const adr = adrNights > 0 ? roomRevenue / adrNights : null
       const occPct = availableNights > 0 ? (soldNights / availableNights) * 100 : null
       return {
         propertyName, propertyId: cap.propertyId,

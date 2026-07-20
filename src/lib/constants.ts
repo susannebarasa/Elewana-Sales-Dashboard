@@ -453,18 +453,19 @@ export const EXTRAS_TABLE_REVENUE_CATEGORY_IDS = [
   '11e9e02c6d3cfd509017ac1f6b672056', // Accommodation Supplement — trivial dollar amount
   '11eb74db737b1baebd4e0cc47a7ebf7a', // Beverage / dinner, secondary code
   '11e95d185b2cf44aaabeac1f6b672056', // Exclusive Safari Vehicle, secondary code — trivial dollar amount
+  // Added 2026-07-20 — decision confirmed: fold into Extras Revenue going forward. Found while
+  // reconciling against Qlik's $6,277,027 2026 Extras Revenue figure (our dashboard was showing
+  // ~$3.8-4.1M): these 2 categories + the still-pending Cost of Flight below accounted for
+  // essentially the entire ~$2.1-2.5M gap.
+  'RS9', // Cancellation Charges — confirmed: counts as Extras Revenue per Qlik's convention
+  '11e96b1eb2d024f3aabeac1f6b672056', // Mixed ops/logistics (Curio Shop, Wedding Fees, Camera Rental, Payroll Chargeout) — confirmed as-is, no line-by-line split needed
 ] as const;
 
-// NOT included yet — pending decisions, do not add without explicit confirmation:
+// NOT included yet — pending decision, do not add without explicit confirmation:
 // - Category '11e96a8796aa9cddaabeac1f6b672056' ("Cost of flight", Heli Safaris, charter) — $12.5M,
 //   reads as a cost pass-through, not margin revenue. Needs Faith/Finance to confirm whether
-//   Elewana keeps any markup before any of it can be counted as revenue.
-// - Category '11e96b1eb2d024f3aabeac1f6b672056' (mixed ops/logistics — Curio Shop, Wedding Fees,
-//   Camera Rental mixed with Drivers' meals/accommodation and a single $850K "Payroll Chargeout"
-//   row) — $1.54M, needs a line-by-line split before any of it can be counted.
-// - Category 'RS9' (Cancellation Charges) — $1.52M, real money kept by the business but
-//   conceptually different from F&B/activities Extras; needs a decision on whether Qlik's
-//   "Extra Revenue" convention includes cancellation revenue.
+//   Elewana keeps any markup before any of it can be counted as revenue. Still held back as of
+//   2026-07-20 — explicitly NOT included with the two categories above.
 // - Category 'WB1' (Park Fees / Conservancy Fees / Concession Fees / Camping Fees / Crater Fees /
 //   Gratuities) — $25.83M, pass-through, same treatment as EXCLUDED_FEE_COMPONENTS. Confirmed
 //   live (13 July 2026) this does NOT overlap with EXCLUDED_FEE_COMPONENTS' rate_components-based

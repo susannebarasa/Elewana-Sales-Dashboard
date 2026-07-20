@@ -18,7 +18,7 @@ import {
   TANZANIA_MAINLAND_PROPERTY_IDS,
   SERENGETI_EXPLORER_STYLE_PROPERTY_IDS,
 } from '@/lib/constants'
-import { ROOM_REVENUE_SUM_SQL, EXTRAS_SUM_SQL, extrasTableRevenueSumSql } from '@/lib/roomRevenue'
+import { ROOM_REVENUE_SUM_SQL, EXTRAS_SUM_SQL, extrasTableRevenueSumSql, dayUseLegCase } from '@/lib/roomRevenue'
 import { getPropertyBudget } from '@/lib/budget'
 
 const n = (v: unknown, def = 0): number => {
@@ -104,10 +104,16 @@ export async function GET(
       // Sold Nights — nights-only, no rate_components join (avoids the fan-out bug where joining
       // rate_components multiplies nights by however many revenue components each leg has), same
       // basis as dashboard/route.ts's revparNightsRows.
-      queryOne<{ sold_nights: number }>(
-        `SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS sold_nights
+      // sold_nights_incl_day_use (2026-07-20) — Qlik's own convention counts Day Rooms in Room
+      // Nights (same fix as dashboard/route.ts's revparNightsRows this session). Kept SEPARATE from
+      // sold_nights (DATEDIFF-only, unchanged) — that stays ADR's denominator, since Day Use legs
+      // carry $0 Room Revenue and would otherwise dilute ADR with no matching numerator.
+      queryOne<{ sold_nights: number; sold_nights_incl_day_use: number }>(
+        `SELECT
+            SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS sold_nights,
+            SUM(CASE WHEN ${dayUseLegCase('i')} THEN 1 ELSE GREATEST(DATEDIFF(i.date_out,i.date_in),0) END) AS sold_nights_incl_day_use
         FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
-        WHERE r.status = '30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)} AND i.date_out > i.date_in
+        WHERE r.status = '30' AND i.property = ? AND ${dateInFullYear('i.date_in', 2026)} AND (i.date_out > i.date_in OR ${dayUseLegCase('i')})
           AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?`,
         [propertyId, NON_REV_IDS, RES_PREFIX]
       ),
@@ -164,10 +170,13 @@ export async function GET(
 
     const roomRevenue = n(roomRevRow?.rev)
     const extrasRevenue = Math.round(n(extrasRow?.extras) + n(dayUseExtrasRow?.extras))
-    const soldNights = n(nightsRow?.sold_nights)
+    // adrNights (DATEDIFF-only) stays ADR's denominator; soldNights (Day-Use-inclusive, 2026-07-20)
+    // is the displayed figure and Occupancy %'s numerator — see the query's own comment above.
+    const adrNights = n(nightsRow?.sold_nights)
+    const soldNights = n(nightsRow?.sold_nights_incl_day_use)
     const availableNights = cap.roomnightsAvailable
     const revpar = availableNights > 0 ? Math.round((roomRevenue / availableNights) * 100) / 100 : null
-    const adr = soldNights > 0 ? Math.round(roomRevenue / soldNights) : null
+    const adr = adrNights > 0 ? Math.round(roomRevenue / adrNights) : null
     const occPct = availableNights > 0 ? Math.round((soldNights / availableNights) * 1000) / 10 : null
 
     const budget = getPropertyBudget(propertyId, 2026, 1, 12)

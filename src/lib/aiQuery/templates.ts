@@ -14,7 +14,7 @@
 // never writes SQL for these. Free-form SQL generation still exists as a fallback for questions
 // no template covers, but that path is validated by sqlSafety.ts (read-only + table allowlist +
 // timeout) — see that file's own comment for what it does and doesn't guarantee.
-import { ROOM_REVENUE_SUM_SQL, EXTRAS_SUM_SQL, ROOM_REVENUE_CASE } from '@/lib/roomRevenue'
+import { ROOM_REVENUE_SUM_SQL, EXTRAS_SUM_SQL, ROOM_REVENUE_CASE, dayUseLegCase, extrasTableRevenueSumSql } from '@/lib/roomRevenue'
 import {
   NON_REVENUE_RATE_TYPE_IDS, EXCLUDED_RESERVATION_PREFIX, EXCLUDED_AGENT_IDS, EXCLUDED_AGENT_NAMES_EXACT,
   EXCLUDED_AGENT_NAME_PATTERN, AGENT_NAME_PATTERN_CARVEOUT_SQL, KES_USD_RATE, PROPERTY_ROOM_COUNTS,
@@ -142,9 +142,9 @@ export interface BuiltQuery {
 // own YTD framing is month-boundary-based (through the current calendar month); this is day-
 // granular, which is a reasonable, slightly more precise equivalent for a conversational answer.
 // 'otb' has no cap at all.
-function dateBasisCap(dateBasis: DateBasis): string {
-  if (dateBasis === 'actualized') return ' AND i.date_out <= CURDATE()'
-  if (dateBasis === 'ytd') return ' AND i.date_in <= CURDATE()'
+function dateBasisCap(dateBasis: DateBasis, alias: string = 'i'): string {
+  if (dateBasis === 'actualized') return ` AND ${alias}.date_out <= CURDATE()`
+  if (dateBasis === 'ytd') return ` AND ${alias}.date_in <= CURDATE()`
   return ''
 }
 function dateBasisCaveat(dateBasis: DateBasis, budgetNote: boolean): string {
@@ -160,8 +160,11 @@ function dateBasisCaveat(dateBasis: DateBasis, budgetNote: boolean): string {
 // inclusive (matches Budget comparisons — same basis as kpiTotalRevFullYear).
 // agentId (2026-07-20) — resolved via resolveAgentName, already excludes test/placeholder/direct
 // accounts at resolution time, so no extra agent-level exclusion is needed here on top of it.
-export function buildTotalRoomRevenue(year: number, dateBasis: DateBasis, propertyId: string | null, agentId: string | null = null): BuiltQuery {
-  const propertyFilter = propertyId ? ' AND i.property = ?' : ''
+// propertyId can also be a string[] (2026-07-20) — used by buildOccupancyAdrRevpar's portfolio-
+// wide branch to scope to the same "15 clean properties" list as availableNightsFor/the
+// dashboard's own portfolio aggregate, instead of every property in the database.
+export function buildTotalRoomRevenue(year: number, dateBasis: DateBasis, propertyId: string | string[] | null, agentId: string | null = null): BuiltQuery {
+  const propertyFilter = propertyId ? (Array.isArray(propertyId) ? ' AND i.property IN (?)' : ' AND i.property = ?') : ''
   const agentFilter = agentId ? ' AND r.agent_id = ?' : ''
   const sql = `SELECT ${ROOM_REVENUE_SUM_SQL} AS revenue
     FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
@@ -175,28 +178,48 @@ export function buildTotalRoomRevenue(year: number, dateBasis: DateBasis, proper
   return { sql, params, caveat: dateBasisCaveat(dateBasis, true) }
 }
 
-// Extras Revenue — rate_components-classified only (per METRICS.md §1.2). Deliberately does NOT
-// also sum the separate `extras` table's Day Use / ancillary revenue the way dashboard/route.ts's
-// own kpiRevNights does — that requires a second cross-joined subquery per property/date-basis
-// combination; out of scope for a quick conversational answer. The caveat below says so rather
-// than silently under-counting.
+// Extras Revenue — rate_components-classified portion CROSS JOINed with the extras-table portion
+// (Day Use, any category + EXTRAS_TABLE_REVENUE_CATEGORY_IDS' confirmed-clean categories
+// everywhere else — see constants.ts), matching dashboard/route.ts's own kpiRevNights/
+// kpiTotalRevFullYear/kpiAgentRev basis exactly (same extrasTableRevenueSumSql helper). Previously
+// this tool ONLY summed the rate_components portion — confirmed live 2026-07-20 while reconciling
+// against Qlik's $6,277,027 2026 Extras Revenue figure that this was silently under-counting by
+// the full extras-table amount (the caveat said so, but "the AI Query Box's Extras Revenue" and
+// "the dashboard's Extras Revenue KPI" were really two different metrics under one name). Fixed to
+// match the dashboard's basis so the two never disagree again for the same question.
 // agentId (2026-07-20) — same resolveAgentName-based scoping as buildTotalRoomRevenue above; see
 // that function's comment for why no extra agent-exclusion filter is needed here.
 export function buildTotalExtrasRevenue(year: number, dateBasis: DateBasis, propertyId: string | null, agentId: string | null = null): BuiltQuery {
   const propertyFilter = propertyId ? ' AND i.property = ?' : ''
   const agentFilter = agentId ? ' AND r.agent_id = ?' : ''
-  const sql = `SELECT ${EXTRAS_SUM_SQL} AS extras
-    FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
-    JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
-    LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
-    WHERE r.status = '30' AND ${dateInFullYear('i.date_in', year)} AND i.date_out > i.date_in
-      AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${dateBasisCap(dateBasis)}${propertyFilter}${agentFilter}`
+  const propertyFilter2 = propertyId ? ' AND i2.property = ?' : ''
+  const agentFilter2 = agentId ? ' AND r2.agent_id = ?' : ''
+  const sql = `SELECT (IFNULL(rc.extras,0) + IFNULL(et.extras_table,0)) AS extras
+    FROM (
+      SELECT ${EXTRAS_SUM_SQL} AS extras
+      FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
+      JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
+      LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
+      WHERE r.status = '30' AND ${dateInFullYear('i.date_in', year)} AND i.date_out > i.date_in
+        AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${dateBasisCap(dateBasis)}${propertyFilter}${agentFilter}
+    ) rc
+    CROSS JOIN (
+      SELECT ${extrasTableRevenueSumSql('i2', 'e', 'dt2')} AS extras_table
+      FROM itineraries i2
+      JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
+      LEFT JOIN extras e ON e.reservation_number = i2.reservation_number AND e.internal_property = i2.property
+      LEFT JOIN rate_types dt2 ON r2.rate_type = dt2.rate_type_id
+      WHERE r2.status='30' AND ${dateInFullYear('i2.date_in', year)}${dateBasisCap(dateBasis, 'i2')}${propertyFilter2}${agentFilter2}
+    ) et`
   const params: unknown[] = [KES_RATE, NON_REV_IDS, RES_PREFIX]
+  if (propertyId) params.push(propertyId)
+  if (agentId) params.push(agentId)
+  params.push(KES_RATE)
   if (propertyId) params.push(propertyId)
   if (agentId) params.push(agentId)
   return {
     sql, params,
-    caveat: `${dateBasisCaveat(dateBasis, false)} Also covers rate-components-classified Extras only — Day Use ancillary revenue recorded in the separate extras table is not included, so this is a floor, not the true total.`,
+    caveat: `${dateBasisCaveat(dateBasis, false)} Covers both rate-components-classified Extras and the extras table's confirmed-clean categories (F&B, activities, transfers, spa, Day Use) — Cost of Flight/Heli charter revenue is still excluded pending Finance confirmation, so this remains a floor, not the true total.`,
   }
 }
 
@@ -238,8 +261,13 @@ export function buildAgentAdr(year: number, agentId: string): BuiltQuery {
   }
 }
 
-function roomNightsSql(year: number, dateBasis: DateBasis, propertyId: string | null): BuiltQuery {
-  const propertyFilter = propertyId ? ' AND i.property = ?' : ''
+// DATEDIFF-only, excludes Day Use — kept internal (not exported directly as a tool builder) since
+// it's now purely the ADR denominator inside buildOccupancyAdrRevpar below. Day Use legs carry $0
+// Room Revenue, so folding them into ADR's denominator would dilute ADR with no matching numerator
+// — same reasoning dashboard/route.ts's KP_BASE.occ.adr and revparByProperty's own adr field
+// already follow (both computed against DATEDIFF-only nights, never the Day-Use-inclusive figure).
+function roomNightsSql(year: number, dateBasis: DateBasis, propertyId: string | string[] | null): BuiltQuery {
+  const propertyFilter = propertyId ? (Array.isArray(propertyId) ? ' AND i.property IN (?)' : ' AND i.property = ?') : ''
   const sql = `SELECT SUM(GREATEST(DATEDIFF(i.date_out, i.date_in), 0)) AS nights
     FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
     WHERE r.status = '30' AND ${dateInFullYear('i.date_in', year)} AND i.date_out > i.date_in
@@ -248,7 +276,29 @@ function roomNightsSql(year: number, dateBasis: DateBasis, propertyId: string | 
   if (propertyId) params.push(propertyId)
   return { sql, params, caveat: dateBasisCaveat(dateBasis, false) }
 }
-export const buildRoomNightsSold = roomNightsSql
+
+// Day-Use-inclusive Room Nights Sold (2026-07-20) — Qlik's own convention counts Day Rooms in Room
+// Nights; this was the standalone "Room Nights Sold" tool's own gap (same fix already applied to
+// KP_BASE.occ.nights' totalNights, 2026-07-13, and dashboard/route.ts's revparNightsRows this
+// session). Day Use legs carry date_out=date_in (0 under DATEDIFF) despite a room genuinely being
+// sold, so `OR dayUseLegCase` has to widen the WHERE clause too, not just the SELECT's CASE — the
+// plain `i.date_out > i.date_in` filter would otherwise exclude them before the CASE ever sees them.
+// This is the ONLY nights figure the standalone room_nights_sold tool reports — deliberately
+// separate from roomNightsSql above, which stays DATEDIFF-only for buildOccupancyAdrRevpar's ADR.
+function roomNightsInclDayUseSql(year: number, dateBasis: DateBasis, propertyId: string | string[] | null): BuiltQuery {
+  const propertyFilter = propertyId ? (Array.isArray(propertyId) ? ' AND i.property IN (?)' : ' AND i.property = ?') : ''
+  const sql = `SELECT SUM(CASE WHEN ${dayUseLegCase('i')} THEN 1 ELSE GREATEST(DATEDIFF(i.date_out, i.date_in), 0) END) AS nights
+    FROM itineraries i JOIN reservations r ON i.reservation_number = r.reservation_number
+    WHERE r.status = '30' AND ${dateInFullYear('i.date_in', year)} AND (i.date_out > i.date_in OR ${dayUseLegCase('i')})
+      AND r.rate_type NOT IN (?) AND r.reservation_number NOT LIKE ?${dateBasisCap(dateBasis)}${propertyFilter}`
+  const params: unknown[] = [NON_REV_IDS, RES_PREFIX]
+  if (propertyId) params.push(propertyId)
+  return {
+    sql, params,
+    caveat: `${dateBasisCaveat(dateBasis, false)} Includes Day Use ("Day Rooms") legs, one night each, per Qlik's own Room Nights convention.`,
+  }
+}
+export const buildRoomNightsSold = roomNightsInclDayUseSql
 
 // Occupancy % / ADR / RevPAR (per METRICS.md §3) are period-invariant on this dashboard — always
 // full-year-2026, regardless of what year is asked — because Available Room Nights (the
@@ -258,14 +308,42 @@ export const buildRoomNightsSold = roomNightsSql
 // (mid-refurb, capacity not adjusted) — same PORTFOLIO_AGG_EXCLUDE_IDS as the dashboard's own
 // aggregate; a single-property question includes that property's own (possibly caveated) figure.
 const CAPACITY_YEAR = 2026
+// CLEAN_PROPERTY_IDS (2026-07-20) — the same "15 clean properties" the dashboard's own portfolio
+// Occupancy %/RevPAR aggregate scopes to (dashboard/route.ts's PORTFOLIO_AGG_EXCLUDE_IDS pass over
+// PROPERTY_ROOM_COUNTS): excludes LEPC (no propertyId at all — mid-construction) and NXR/Lewa
+// (PORTFOLIO_AGG_EXCLUDE_IDS — pre-opening / mid-refurb, capacity not adjusted). Previously,
+// buildOccupancyAdrRevpar's portfolio-wide (propertyId=null) branch queried ALL reservations with
+// no property restriction at all — a different, unrestricted scope from the dashboard's own KPI,
+// so the two could disagree even on the same underlying data. Only used for the null-propertyId
+// (portfolio) branch below; a single named property still scopes to just that property, unchanged.
+const CLEAN_PROPERTY_IDS: string[] = Object.values(PROPERTY_ROOM_COUNTS)
+  .map((cap) => cap.propertyId)
+  .filter((id): id is string => !!id && !PORTFOLIO_AGG_EXCLUDE_IDS.has(id))
+// nightsInclDayUse (2026-07-20) — Occupancy % must now include Day Use nights (same convention as
+// buildRoomNightsSold/revparNightsRows), but ADR must NOT (Day Use has $0 Room Revenue). Returns
+// both side by side so route.ts can divide revenue by the DATEDIFF-only `nights` for ADR and by
+// `nightsInclDayUse` for Occupancy % — RevPAR's own formula (revenue ÷ available) never consumed
+// sold nights at all, so it needs no change, just consistent underlying data.
+// ADR basis fix (2026-07-20) — the dashboard's own ADR (KP_BASE.occ.adr, kpiRevNights) is
+// Actualized-only (completed stays, i.date_out <= today), while this tool's ADR was On-the-books
+// (booking-inclusive, same as Occupancy %/RevPAR) — confirmed live the two disagreed ($996 vs
+// $1,174 for the same portfolio/period) purely from this basis mismatch, not a real business
+// difference. Added a SEPARATE Actualized revenue+nights pair (revenueActualized/nightsActualized)
+// used ONLY for ADR; Occupancy %/RevPAR stay On-the-books/full-year 2026, unchanged — those two are
+// deliberately period-invariant per METRICS.md §3, ADR is not.
 export function buildOccupancyAdrRevpar(propertyId: string | null): { sql: string; params: unknown[]; caveat: string } {
-  const revenueQuery = buildTotalRoomRevenue(CAPACITY_YEAR, 'otb', propertyId)
-  const nightsQuery = roomNightsSql(CAPACITY_YEAR, 'otb', propertyId)
-  const sql = `SELECT rev.revenue, nt.nights
+  const scope: string | string[] | null = propertyId ?? CLEAN_PROPERTY_IDS
+  const revenueQuery = buildTotalRoomRevenue(CAPACITY_YEAR, 'otb', scope)
+  const nightsInclDayUseQuery = roomNightsInclDayUseSql(CAPACITY_YEAR, 'otb', scope)
+  const revenueActualizedQuery = buildTotalRoomRevenue(CAPACITY_YEAR, 'actualized', scope)
+  const nightsActualizedQuery = roomNightsSql(CAPACITY_YEAR, 'actualized', scope)
+  const sql = `SELECT rev.revenue, ntd.nights AS nights_incl_day_use, reva.revenue AS revenue_actualized, nta.nights AS nights_actualized
     FROM (${revenueQuery.sql}) rev
-    CROSS JOIN (${nightsQuery.sql}) nt`
-  const params = [...revenueQuery.params, ...nightsQuery.params]
-  const caveat = 'Occupancy %/ADR/RevPAR are always full-year 2026 on this dashboard, regardless of what period is asked — the capacity figure they divide by has no other year to compare against.'
+    CROSS JOIN (${nightsInclDayUseQuery.sql}) ntd
+    CROSS JOIN (${revenueActualizedQuery.sql}) reva
+    CROSS JOIN (${nightsActualizedQuery.sql}) nta`
+  const params = [...revenueQuery.params, ...nightsInclDayUseQuery.params, ...revenueActualizedQuery.params, ...nightsActualizedQuery.params]
+  const caveat = 'Occupancy %/RevPAR are always full-year 2026 On-the-books on this dashboard, regardless of what period is asked — the capacity figure they divide by has no other year to compare against. ADR is Actualized-only (completed stays), matching the dashboard\'s own ADR KPI. Portfolio-wide figures scope to the same 15 "clean" properties as the dashboard\'s own KPI (excluding Ngorongoro Explorer/Lewa Safari Camp/LEPC). Occupancy % includes Day Use ("Day Rooms") nights per Qlik convention; ADR excludes them (Day Use carries $0 Room Revenue, so including it would dilute ADR with no matching numerator).'
   return { sql, params, caveat }
 }
 export function availableNightsFor(propertyId: string | null): number {
