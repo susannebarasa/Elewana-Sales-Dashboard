@@ -78,8 +78,11 @@ export default function AgentPerformanceDrillPanel({ agentId, onClose }: Props) 
       .catch((e) => { setError(String(e)); setLoading(false) })
   }, [agentId])
 
+  // disableEnforceFocus (2026-07-20) — see AgentProfilePanel.tsx for the full explanation: MUI's
+  // default Modal focus trap kept the AI Query Box's input from ever receiving focus while this
+  // Drawer was open.
   return (
-    <Drawer anchor="right" open={!!agentId} onClose={onClose}>
+    <Drawer anchor="right" open={!!agentId} onClose={onClose} disableEnforceFocus>
       <Box sx={{ width: { xs: '100vw', sm: '42vw' }, minWidth: { sm: 440 }, maxWidth: '100vw', height: '100%', display: 'flex', flexDirection: 'column' }}>
         <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', p: 2, borderBottom: '0.5px solid', borderColor: 'divider' }}>
           <Box>

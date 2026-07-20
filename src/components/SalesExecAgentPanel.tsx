@@ -121,11 +121,15 @@ export default function SalesExecAgentPanel({ agentId, onClose }: Props) {
   // urgency chip) for a provisional booking's held-until-expiry window.
   const expiringSoonCount = profile ? profile.provisionalBookings.filter((b) => b.daysToExpiry !== null && b.daysToExpiry <= 2).length : 0
 
+  // disableEnforceFocus (2026-07-20) — see AgentProfilePanel.tsx for the full explanation: MUI's
+  // default Modal focus trap kept the AI Query Box's input from ever receiving focus while this
+  // Drawer was open.
   return (
     <Drawer
       anchor="right"
       open={!!agentId}
       onClose={onClose}
+      disableEnforceFocus
       slotProps={{ paper: { sx: { top: 0, right: 0, height: '100dvh', width: { xs: '100vw', sm: '44%' }, minWidth: { sm: 460 }, maxWidth: { sm: 660 } } } }}
     >
       <Box sx={{ width: '100%', height: '100%', bgcolor: T.cd, display: 'flex', flexDirection: 'column', fontFamily: T.sa }}>

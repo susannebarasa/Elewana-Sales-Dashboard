@@ -83,8 +83,11 @@ export default function MarketSegmentProfilePanel({ segment, filters, onClose, o
       .catch((e) => { setError(String(e)); setLoading(false) })
   }, [segment, filters.year, filters.period, filters.channel])
 
+  // disableEnforceFocus (2026-07-20) — see AgentProfilePanel.tsx for the full explanation: MUI's
+  // default Modal focus trap kept the AI Query Box's input from ever receiving focus while this
+  // Drawer was open.
   return (
-    <Drawer anchor="right" open={!!segment} onClose={onClose}>
+    <Drawer anchor="right" open={!!segment} onClose={onClose} disableEnforceFocus>
       <Box sx={{ width: { xs: '100vw', sm: '42vw' }, minWidth: { sm: 440 }, maxWidth: '100vw', height: '100%', display: 'flex', flexDirection: 'column' }}>
         <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', p: 2, borderBottom: '0.5px solid', borderColor: 'divider' }}>
           <Box>

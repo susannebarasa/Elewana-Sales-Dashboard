@@ -106,8 +106,14 @@ export default function AgentProfilePanel({ agentId, onClose }: Props) {
     ],
   } : null
 
+  // disableEnforceFocus (2026-07-20) — MUI's default Modal focus trap silently pulls focus back
+  // into the Drawer on every attempt to focus anything outside it (confirmed live:
+  // document.activeElement stayed on MuiDrawer-paper even after clicking the AI Query Box's
+  // textarea, so typed keystrokes never reached it). The AI Query Box renders outside this
+  // Drawer's DOM subtree at zIndex 1400 specifically so it stays usable while a panel is open —
+  // the focus trap defeated that even though z-index/hit-testing were already correct.
   return (
-    <Drawer anchor="right" open={!!agentId} onClose={onClose}>
+    <Drawer anchor="right" open={!!agentId} onClose={onClose} disableEnforceFocus>
       <Box sx={{ width: { xs: '100vw', sm: '40vw' }, minWidth: { sm: 420 }, maxWidth: '100vw', height: '100%', display: 'flex', flexDirection: 'column' }}>
         <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', p: 2, borderBottom: '0.5px solid', borderColor: 'divider' }}>
           <Box>
