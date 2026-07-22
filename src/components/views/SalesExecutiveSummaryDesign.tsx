@@ -160,8 +160,28 @@ function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric;
       <Typography sx={{ fontFamily: T.se, fontSize: 33, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: s.valueColor, mb: '8px', textShadow: '0 1px 0 rgba(255,255,255,.85), 0 2px 4px rgba(31,26,20,.22)' }}>
         {fmtK(metric.v, metric.fmt)}
       </Typography>
-      <Box sx={{ fontFamily: T.sa, fontSize: 10.5, color: T.mu, display: 'flex', alignItems: 'center', gap: '6px' }}>
-        <Variance metric={metric} /> {caption}
+      <Box sx={{ fontFamily: T.sa, fontSize: 10.5, color: T.mu, display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+        <Variance metric={metric} />
+        {/* Budget-basis tag (2026-07-22) — this card's comparator is a Budget target, not last
+            year's actual, unlike its three neighbors. A plain "{caption}" here used to look
+            identical in style to their "vs last year" text, inviting the misread that all four
+            cards share one comparison basis. The distinct pill (same convention as the app's
+            existing "caveat"/tag chips) makes that basis visually unmistakable at a glance. */}
+        {metric.budget
+          ? (
+            <Box
+              component="span"
+              sx={{
+                fontSize: 8, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                px: '7px', py: '2px', borderRadius: '20px', lineHeight: 1.6,
+                bgcolor: '#FDF3E4', color: '#8A5A00', border: '1px solid #E8B84B',
+              }}
+            >
+              Budget
+            </Box>
+          )
+          : null}
+        {caption}
       </Box>
       <Box sx={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '3px', bgcolor: s.barColor }} />
     </Box>
@@ -496,6 +516,13 @@ export default function SalesExecutiveSummaryDesign({
               <Button
                 key={p.value}
                 onClick={() => onFilters({ ...filters, period: p.value })}
+                // Full Year caveat (2026-07-22) — this toggle compares actual-to-date (future months
+                // haven't happened, so the .v side never grows past YTD) against a COMPLETE prior
+                // year, unlike MTD/YTD where both sides are bounded the same way. Native `title`
+                // (not MuiTooltip) deliberately — MUI's ButtonGroup clones props onto its direct
+                // children to draw the grouped border; wrapping this Button in a Tooltip would make
+                // Tooltip the child ButtonGroup clones onto instead, breaking that styling.
+                title={p.value === 'a' ? 'Actual-to-date vs. full prior year — will read artificially low until the year completes' : undefined}
                 sx={{
                   fontFamily: T.sa, fontSize: 10.5, fontWeight: 600, px: '11px', py: '5px', borderRadius: '4px !important',
                   border: 'none !important', color: filters.period === p.value ? T.cd : T.mu,
