@@ -540,6 +540,57 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         ]
       ),
 
+      // Same-elapsed-basis LY total (2026-07-22 fix) — identical to agentTotalsLyRow above except
+      // ALWAYS bounded Jan 1–realCurrentMonth (hardcoded, not the period-derived monthLo/monthHi).
+      // Root cause: agentTotalsRow/agentTotalsLyRow filter by r.date_created, which for period='a'
+      // requests monthHi=12 on BOTH sides — but the cy side silently truncates to "so far this
+      // year" (date_created can never be in the future), while the ly side (2025, fully elapsed)
+      // genuinely gets all 12 months. Comparing ~7 months of new 2026 bookings against 12 months
+      // of 2025 bookings produced the Leaderboard footer's "-55.0% YoY" artifact (live-verified
+      // 2026-07-22) — the exact same partial-vs-full mismatch already fixed for the KPI cards,
+      // just living in a completely different query pair this fix never touched. For period='m'/
+      // 'y', this is unused — agentTotalsLyRow's own period-driven bounds are already correct
+      // there (both sides already elapsed-matched), so only period='a' switches to this query;
+      // see the `totals` assembly below.
+      agentTotalsLyYtdRow: () => queryOne<{ total_revenue: number; total_nights: number; agent_count: number }>(
+        `SELECT SUM(rv.rv_raw) AS total_revenue, SUM(lg.nt) AS total_nights, COUNT(DISTINCT rv.agent_id) AS agent_count
+        FROM (
+          SELECT r.agent_id, ${ROOM_REVENUE_SUM_SQL} AS rv_raw
+          FROM reservations r
+          JOIN itineraries i ON r.reservation_number = i.reservation_number
+          JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
+          LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
+          WHERE r.status = '30' AND ${dateInYearMonthRange('r.date_created', ly, 1, realCurrentMonth)}
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+          GROUP BY r.agent_id
+        ) rv
+        JOIN (
+          SELECT r.agent_id, SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS nt
+          FROM reservations r JOIN itineraries i ON r.reservation_number=i.reservation_number
+          WHERE r.status IN ('20','30') AND ${dateInYearMonthRange('r.date_created', ly, 1, realCurrentMonth)}
+            AND r.agent_id NOT IN (?)
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+          GROUP BY r.agent_id
+        ) lg ON rv.agent_id=lg.agent_id
+        JOIN agents a ON rv.agent_id=a.agent_id
+        WHERE a.agent_name NOT IN (?)
+          AND (LOWER(a.agent_name) NOT LIKE ? OR a.agent_id IN (${AGENT_NAME_PATTERN_CARVEOUT_SQL}))${AND_A}`,
+        [
+          KES_RATE,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_IDS,
+          NON_REV_IDS,
+          RES_PREFIX,
+          EX_AGENT_NAMES,
+          AGENT_NAME_LIKE
+        ]
+      ),
+
       // Extras-table revenue (Day Use, any category + confirmed-clean categories everywhere
       // else), grouped by agent — merged into AD.yearly's extras_raw in JS. Same pattern as
       // the AD.byProp query. FIX (2026-07-13, extras-table revenue): broadened beyond Day Use.
@@ -1428,6 +1479,46 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         [NON_REV_IDS, RES_PREFIX, KES_RATE, KES_RATE, NON_REV_IDS, RES_PREFIX, KES_RATE, NON_REV_IDS, RES_PREFIX]
       ),
 
+      // Same-elapsed-basis LY actual (2026-07-22 fix) — sibling to kpiRevNightsLy above, but
+      // ALWAYS bounded Jan 1–realCurrentMonth (hardcoded, not the period-derived monthLo/monthHi),
+      // regardless of which period toggle is selected. Purpose: kpiRevNightsLy's own `ly` becomes
+      // last year's COMPLETE 12 months when period==='a', while occ.rev/nights.v stays actualized-
+      // to-date (partial year) — comparing the two is the exact same partial-vs-full mismatch
+      // already fixed for the Full Year card headline (2026-07-22), just resurfacing in the detail
+      // tooltip's "vs Last Year" line instead. This query exists solely to feed
+      // tooltipDetail.actualizedLy (see below) with a real, always-apples-to-apples comparator —
+      // never occ.rev/nights.ly itself, which stays untouched for every other consumer (KpiCard's
+      // single-comparison fallback, the Full Year card's own "vs Last Year" row, ExecSummaryView).
+      // Leaner than kpiRevNightsLy — no extras/adr needed here, just rev_raw + total_nights +
+      // day_use_nights, so the rev subquery uses ROOM_REVENUE_SUM_SQL alone (one placeholder, not
+      // two) and the day-use subquery drops the extras-table join entirely.
+      kpiRevNightsLyYtd: () => queryOne<{ rev_raw: number; total_nights: number; day_use_nights: number }>(
+        `SELECT nights.total_nights, rev.rev_raw, dayuse.day_use_nights
+        FROM (
+          SELECT SUM(GREATEST(DATEDIFF(i.date_out,i.date_in),0)) AS total_nights
+          FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, 1, realCurrentMonth)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in AND NOT ${dayUseLegCase('i')}
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+        ) nights
+        CROSS JOIN (
+          SELECT ${ROOM_REVENUE_SUM_SQL} AS rev_raw
+          FROM itineraries i JOIN reservations r ON i.reservation_number=r.reservation_number
+          JOIN rate_components rc ON rc.itinerary_id = i.itinerary_id
+          LEFT JOIN rate_types dt ON r.rate_type = dt.rate_type_id
+          WHERE r.status = '30' AND ${dateInYearMonthRange('i.date_in', ly, 1, realCurrentMonth)} AND i.date_out <= CURDATE() AND i.date_out > i.date_in
+            AND r.rate_type NOT IN (?)
+            AND r.reservation_number NOT LIKE ?${AND_P}
+        ) rev
+        CROSS JOIN (
+          SELECT COUNT(DISTINCT CASE WHEN ${dayUseLegCase('i2')} AND r2.rate_type NOT IN (?) AND r2.reservation_number NOT LIKE ? THEN i2.itinerary_id END) AS day_use_nights
+          FROM itineraries i2
+          JOIN reservations r2 ON i2.reservation_number = r2.reservation_number
+          WHERE r2.status='30' AND ${dateInYearMonthRange('i2.date_in', ly, 1, realCurrentMonth)} AND i2.date_in <= CURDATE()${AND_P2}
+        ) dayuse`,
+        [NON_REV_IDS, RES_PREFIX, KES_RATE, NON_REV_IDS, RES_PREFIX, NON_REV_IDS, RES_PREFIX]
+      ),
+
       // KPI LY: avg lead time, same-period prior year — real YoY basis for pace.lead.
       // Identical shape to the kpiLead query above, cy -> ly.
       kpiLeadLy: () => queryOne<{ avg_lead: number }>(
@@ -2076,6 +2167,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const agLyRows = qArr<{ nm: string; rv_raw: number }>('agLyRows')
     const agentTotalsRow = qOne<{ total_revenue: number; total_nights: number; agent_count: number }>('agentTotalsRow')
     const agentTotalsLyRow = qOne<{ total_revenue: number; total_nights: number; agent_count: number }>('agentTotalsLyRow')
+    const agentTotalsLyYtdRow = qOne<{ total_revenue: number; total_nights: number; agent_count: number }>('agentTotalsLyYtdRow')
     const agPropRows = qArr<{ pr: string; property_id: string; rv: number; ly_val: number; extras: number; extras_ly: number }>('agPropRows')
     const dayUsePropRows = qArr<{ property_id: string; extras: number; extras_ly: number }>('dayUsePropRows')
     const agMonthRows = qArr<{ m: number; mn: string; act: number; ly_val: number; extras: number; extras_ly: number }>('agMonthRows')
@@ -2101,6 +2193,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const kpiAgentsLy = qOne<{ active_agents: number }>('kpiAgentsLy')
     const kpiAgentRevLy = qOne<{ arev_raw: number; extras_raw: number; extras_table_revenue: number; port_adr: number; avg_stay: number }>('kpiAgentRevLy')
     const kpiRevNightsLy = qOne<{ rev_raw: number; total_nights: number; adr: number; extras_raw: number; extras_table_revenue: number; day_use_nights: number }>('kpiRevNightsLy')
+    const kpiRevNightsLyYtd = qOne<{ rev_raw: number; total_nights: number; day_use_nights: number }>('kpiRevNightsLyYtd')
     const kpiLeadLy = qOne<{ avg_lead: number }>('kpiLeadLy')
     const kpiConsultLy = qOne<{ n_consult: number; total_bkgs: number }>('kpiConsultLy')
     const cdLyRows = qArr<{ nm: string; rv: number }>('cdLyRows')
@@ -2269,7 +2362,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         const totalRevenueRaw = n(agentTotalsRow?.total_revenue)
         const totalNights = i(agentTotalsRow?.total_nights)
         const agentCount = i(agentTotalsRow?.agent_count)
-        const totalRevenueLyRaw = n(agentTotalsLyRow?.total_revenue)
+        // Same-elapsed-basis LY fix (2026-07-22) — agentTotalsLyRow's own monthLo/monthHi follow
+        // the selected period, so for period='a' it hands back all 12 months of fully-elapsed
+        // 2025 while agentTotalsRow's r.date_created naturally truncates at "today" for 2026,
+        // producing an inflated "-55.0% YoY" artifact (same bug already fixed for the KPI cards'
+        // tooltips via kpiRevNightsLyYtd). agentTotalsLyYtdRow is always Jan1-realCurrentMonth, so
+        // it's the correct comparator specifically when period==='a'; 'm'/'y' keep using
+        // agentTotalsLyRow, which is already elapsed-matched for those periods.
+        const totalRevenueLyRaw = n((period === 'a' ? agentTotalsLyYtdRow : agentTotalsLyRow)?.total_revenue)
         return {
           revenue: totalRevenueRaw / 1e6, // $M, matches KP_BASE.agents.arev's convention
           nights: totalNights,
@@ -2427,6 +2527,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const adrLy = i(kpiRevNightsLy?.adr)
     const extrasRawLy = n(kpiRevNightsLy?.extras_raw) + n(kpiRevNightsLy?.extras_table_revenue)
     const extrasMLy = extrasRawLy / 1e6
+    // Same-elapsed-basis LY actual (2026-07-22 fix) — see kpiRevNightsLyYtd's own comment. Used
+    // ONLY by revTooltipDetail/nightsTooltipDetail's "vs Last Year" comparison row below — never
+    // as a replacement for revMLy/totalNightsLy above, which stay period-driven for every other
+    // consumer (KpiCard's single-comparison fallback, the Full Year card's dual-comparison row).
+    const revActualizedLyM = n(kpiRevNightsLyYtd?.rev_raw) / 1e6
+    const nightsActualizedLy = i(kpiRevNightsLyYtd?.total_nights) + i(kpiRevNightsLyYtd?.day_use_nights)
     const avgLeadLy = i(kpiLeadLy?.avg_lead)
     const nConsultLy = i(kpiConsultLy?.n_consult)
     const totalBkgsCLy = i(kpiConsultLy?.total_bkgs)
@@ -2601,6 +2707,42 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       'Always full-year 2026, regardless of the MTD/YTD/Full Year toggle — an intentional, retrospective-occupancy convention (not period-filterable).',
     ]
 
+    // Structured "detail card" tooltip content (2026-07-22) — additive sibling to the plain-string
+    // tooltips above (those stay as-is for ExecSummaryView's generic KpiRow). Primary figure +
+    // comparison for these three are rendered client-side straight from metric.v/metric.ly — only
+    // the header + secondary breakdown rows need new structured data here, sourced from the exact
+    // same numbers revTooltip/nightsTooltip already use, just not pre-flattened into strings.
+    const revTooltipDetail = {
+      header: 'ROOM REVENUE DETAIL',
+      breakdown: [
+        { label: 'On The Books (OTB)', value: fmtDollarM(totalRevFullYearM) },
+        { label: 'OTB vs Budget', value: `${fmtDollarM(activeBudgetRevM)}${otbVsBudgetPct !== null ? ` (${otbVsBudgetPct.toFixed(1)}%)` : ''}` },
+        { label: 'Extras Revenue', value: `${fmtDollarM(extrasM)} actualized · ${fmtDollarM(otbExtrasM)} OTB` },
+      ],
+      actualizedLy: revActualizedLyM,
+    }
+    const otbNightsVsBudgetPct = occBudgetRns > 0 ? (otbNights / occBudgetRns) * 100 : null
+    const nightsTooltipDetail = {
+      header: 'ROOM NIGHTS SOLD DETAIL',
+      breakdown: [
+        { label: 'On The Books (OTB)', value: otbNights.toLocaleString() },
+        {
+          label: 'OTB vs Budget',
+          value: occBudgetRns > 0
+            ? `${Math.round(occBudgetRns).toLocaleString()}${otbNightsVsBudgetPct !== null ? ` (${otbNightsVsBudgetPct.toFixed(1)}%)` : ''}`
+            : '—',
+        },
+      ],
+      actualizedLy: nightsActualizedLy,
+    }
+    const occPctTooltipDetail = {
+      header: 'OCCUPANCY % DETAIL',
+      breakdown: [
+        { label: 'Scope', value: revparOccCaption },
+        { label: 'Basis', value: 'Full-year 2026, all periods — not period-filterable' },
+      ],
+    }
+
     const KP_BASE = {
       pace: {
         // STLY basis, BOUNDED 1-year window on both sides (see kpiConfirmedBounded/
@@ -2638,11 +2780,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         // period==='a'), same basis as Budget itself — unlike budgetMtd/budgetYtd's actual side
         // (kpiBudgetActual, hardcoded to realCurrentMonth) or revM (actualized-only).
         budgetFullYear: kpi(totalRevFullYearM, '$M', 'Full Year vs Budget', `${cy} full year`, fullYearBudgetRevM, fullYearBudgetRevM * 0.85, undefined, fullYearBudgetRevM, undefined, true),
+        // Full Year Room Nights vs Budget (2026-07-22) — sibling to budgetFullYear above, same
+        // reasoning: otbNights (kpiTotalRevFullYear) is OTB/booking-inclusive, occBudgetRns
+        // (getPortfolioBudget/getPropertyBudget(cy,1,12).rns, already computed above for
+        // portfolioOccPctBudget) is the matching full-year Budget target on the same basis.
+        // Added specifically so Sales Executive Summary's Full Year toggle can show Room Nights
+        // Sold vs Budget alongside vs Last Year — see occ.nights below, which stays actualized-only
+        // and unaffected by this addition (ExecSummaryView's Occupancy tab keeps reading that as-is).
+        budgetFullYearNights: kpi(otbNights, 'int', 'Room Nights Sold vs Budget', `${cy} full year`, occBudgetRns, occBudgetRns * 0.85, undefined, occBudgetRns, undefined, true),
       },
       occ: {
-        nights: kpi(totalNights, 'int', 'Room Nights Sold', 'ResRequest', 18000, 14000, undefined, totalNightsLy, undefined, undefined, nightsTooltip),
+        nights: { ...kpi(totalNights, 'int', 'Room Nights Sold', 'ResRequest', 18000, 14000, undefined, totalNightsLy, undefined, undefined, nightsTooltip), tooltipDetail: nightsTooltipDetail },
         adr: kpi(adr, '$', 'Avg Daily Rate', 'from bookings', 3000, 2500, undefined, adrLy),
-        rev: kpi(revM, '$M', 'Total Room Revenue', 'room revenue', 70, 55, undefined, revMLy, undefined, undefined, revTooltip),
+        rev: { ...kpi(revM, '$M', 'Total Room Revenue', 'room revenue', 70, 55, undefined, revMLy, undefined, undefined, revTooltip), tooltipDetail: revTooltipDetail },
         // New (2026-07-08, Room Revenue / Extras split): Room Revenue + Extras = Total Revenue,
         // per Faith's room_revenue_components.csv and Qlik's Trade Partner Scorecard convention.
         // Thresholds are placeholder round numbers, not yet calibrated against a full year of
@@ -2661,7 +2811,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         // `budget: true` so KpiRow/budgetVariance label it "BUDGET" instead of YoY — same
         // convention as pace.budgetMtd/budgetYtd. No tooltip (2026-07-16i) — an obviously
         // actual-only value, doesn't need explanation.
-        occPct: kpi(portfolioOccPct, 'pct', 'Occupancy %', revparOccCaption, 55, 45, undefined, portfolioOccPctBudget, undefined, true),
+        occPct: { ...kpi(portfolioOccPct, 'pct', 'Occupancy %', revparOccCaption, 55, 45, undefined, portfolioOccPctBudget, undefined, true), tooltipDetail: occPctTooltipDetail },
       },
       agents: {
         active: kpi(activeAgents, 'int', 'Active Trade Partners', 'this period', 700, 500, undefined, activeAgentsLy),

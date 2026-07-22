@@ -64,6 +64,7 @@ export type DashboardQueryId =
   | 'kpiAgentsLy'
   | 'kpiAgentRevLy'
   | 'kpiRevNightsLy'
+  | 'kpiRevNightsLyYtd'
   | 'kpiLeadLy'
   | 'kpiConsultLy'
   | 'cdLyRows'
@@ -92,6 +93,7 @@ export type DashboardQueryId =
   | 'marketSegments'
   | 'agentTotalsRow'
   | 'agentTotalsLyRow'
+  | 'agentTotalsLyYtdRow'
 
 export const ALL_QUERY_IDS: readonly DashboardQueryId[] = [
   'pdRows',
@@ -127,6 +129,7 @@ export const ALL_QUERY_IDS: readonly DashboardQueryId[] = [
   'kpiAgentsLy',
   'kpiAgentRevLy',
   'kpiRevNightsLy',
+  'kpiRevNightsLyYtd',
   'kpiLeadLy',
   'kpiConsultLy',
   'cdLyRows',
@@ -155,6 +158,7 @@ export const ALL_QUERY_IDS: readonly DashboardQueryId[] = [
   'marketSegments',
   'agentTotalsRow',
   'agentTotalsLyRow',
+  'agentTotalsLyYtdRow',
 ] as const
 
 /**
@@ -267,6 +271,9 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     'kpiConfirmed',
     'kpiRevNights',
     'kpiRevNightsLy',
+    // Tooltip's "Actualized vs Last Year" same-elapsed-basis comparator (2026-07-22 fix) — see
+    // 'sales-exec-summary-kpis' comment below for why this is a separate query from kpiRevNightsLy.
+    'kpiRevNightsLyYtd',
     'kpiLyBkgs',
     'kpiBudgetActual',
     // Full Year vs Budget fix (2026-07-16e) — see 'exec-summary' comment above; needed for
@@ -303,6 +310,14 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     // KP_BASE.occ.rev/nights/adr (+ YoY ly counterparts)
     'kpiRevNights',
     'kpiRevNightsLy',
+    // Detail-tooltip "Actualized vs Last Year" comparator (2026-07-22 fix) — kpiRevNightsLy's own
+    // monthLo/monthHi follow the selected period (full year when period==='a'), so its `ly` is
+    // last year's COMPLETE year while occ.rev/nights.v stays actualized-to-date (partial year) —
+    // the exact same partial-vs-full mismatch already fixed for the card headline, just surfacing
+    // in the tooltip instead. This sibling query is always bounded Jan 1–today's-month regardless
+    // of the period toggle, so DetailTooltip's comparison row stays apples-to-apples no matter
+    // which period is selected. Feeds tooltipDetail.actualizedLy, NOT occ.rev/nights.ly itself.
+    'kpiRevNightsLyYtd',
     // KP_BASE.occ.revpar/occPct (portfolio-aggregate RevPAR/Occ%, actual + budget-target side)
     'budgetActualByPropRows',
     'revparNightsRows',
@@ -351,6 +366,10 @@ export const VIEW_QUERY_IDS: Record<DashboardView, readonly DashboardQueryId[]> 
     // (i.date_in) date basis and would not sum-reconcile with what the table actually shows.
     'agentTotalsRow',
     'agentTotalsLyRow',
+    // Same-elapsed-basis LY total (2026-07-22 fix) — see route.ts's agentTotalsLyYtdRow comment.
+    // Feeds AD.totals.yoyPct when period='a', so Full Year's footer YoY stops comparing ~7 elapsed
+    // 2026 months against all 12 months of 2025.
+    'agentTotalsLyYtdRow',
   ],
   cn: ['cdRows', 'cdLyRows', 'kpiConsult', 'kpiConsultLy', 'kpiAgentRev', 'kpiAgentRevLy'],
   'property-performance': [

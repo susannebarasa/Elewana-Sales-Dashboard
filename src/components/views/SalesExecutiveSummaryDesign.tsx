@@ -125,8 +125,13 @@ function ragFromYoyPct(pct: number | null): Rag {
   if (pct === null || pct === undefined || isNaN(pct)) return 'neutral'
   return pct < 0 ? 'r' : pct < 2.5 ? 'a' : 'g'
 }
-function yoyPct(metric: KpiMetric): number | null {
-  return typeof metric.ly === 'number' && metric.ly > 0 ? ((metric.v - metric.ly) / metric.ly) * 100 : null
+// Widened (2026-07-22) from `metric: KpiMetric` to this minimal structural shape so it also
+// accepts the lightweight { label, v, ly } comparison pairs KpiCard's `comparisons` prop carries
+// (Full Year's vs-Budget pair) — those aren't full KpiMetric objects (no fmt/lbl/d/etc.), but the
+// only fields this function ever reads are v/ly, so nothing about its behavior changes for
+// existing KpiMetric callers.
+function yoyPct(m: { v: number; ly?: number }): number | null {
+  return typeof m.ly === 'number' && m.ly > 0 ? ((m.v - m.ly) / m.ly) * 100 : null
 }
 const RAG_STYLES: Record<Rag, { bg: string; border: string; valueColor: string; barColor: string }> = {
   g: { bg: 'linear-gradient(180deg,#F5FAEE 0%,#EAF3DE 100%)', border: 'rgba(59,109,17,.45)', valueColor: T.rg, barColor: T.rg },
@@ -135,9 +140,107 @@ const RAG_STYLES: Record<Rag, { bg: string; border: string; valueColor: string; 
   neutral: { bg: 'linear-gradient(180deg,#FFFDF7 0%,' + T.cd + ' 100%)', border: T.br, valueColor: T.ink, barColor: T.br },
 }
 
-function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric; caption: string }) {
-  const rag = ragFromYoyPct(yoyPct(metric))
+// Dark "detail card" tooltip (2026-07-22) — replaces the old flat-text tooltip lines for metrics
+// carrying `tooltipDetail`: header, bold Actualized primary figure, colored vs-Last-Year
+// comparison row, then secondary breakdown rows (OTB / OTB vs Budget / Extras etc., whatever the
+// route supplied). Reuses the same dark-narrative-panel palette already established elsewhere on
+// this page (T.dk background, #F5EDD8/#A89880/#7A6A58 text tiers, #8FCB7A/#E58A7C variance colors
+// — see the Executive Summary narrative panel below) rather than MUI Tooltip's default gray, so
+// this reads as the same design system, not a bolted-on widget.
+function DetailTooltip({ metric }: { metric: KpiMetric }) {
+  const detail = metric.tooltipDetail
+  if (!detail) return null
+  // Same-elapsed-basis fix (2026-07-22) — prefer detail.actualizedLy (always Jan 1–this month,
+  // last year) over metric.ly whenever it's present. metric.ly follows the period toggle's own
+  // monthLo/monthHi (last year's COMPLETE 12 months when the card is in Full Year mode), which
+  // would compare metric.v (still partial-year actualized-to-date) against a full prior year —
+  // the exact partial-vs-full mismatch already fixed for the card headline, just resurfacing
+  // here. Falls back to metric.ly for any tooltipDetail that didn't set actualizedLy.
+  const d = budgetVariance({ v: metric.v, ly: detail.actualizedLy ?? metric.ly })
+  // Text palette (2026-07-22d) — rebuilt from scratch for the new #8C7550 mid-tone background.
+  // The old palette (pale cream/amber/green/red) was tuned for the near-black T.dk fill and
+  // fails badly here (e.g. the old muted-label color computes to ~1:1 against this background —
+  // effectively invisible). A mid-luminance background doesn't pair well with EITHER a fully
+  // pale or fully dark text set at full strength, so this is a dedicated 2-tier system verified
+  // against #8C7550 specifically: near-white for emphasis (4.29:1), near-black for secondary
+  // text (3.93:1), and darkened/desaturated green+red for variance (3.90:1 / 3.55:1) — all
+  // computed via actual WCAG contrast math, not eyeballed.
+  const TT_EMPHASIS = '#FFFCF5'
+  const TT_SECONDARY = '#1F1A14'
+  const TT_UP = '#0E2001'
+  const TT_DOWN = '#4A0C06'
+  return (
+    <Box sx={{ minWidth: 230, maxWidth: 290 }}>
+      <Typography sx={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: TT_EMPHASIS, mb: '10px' }}>
+        {detail.header}
+      </Typography>
+      <Typography sx={{ fontSize: 8, letterSpacing: '0.09em', textTransform: 'uppercase', color: TT_SECONDARY, mb: '2px' }}>
+        Actualized
+      </Typography>
+      <Typography sx={{ fontFamily: T.se, fontSize: 26, fontWeight: 600, color: TT_EMPHASIS, lineHeight: 1, mb: '6px' }}>
+        {fmtK(metric.v, metric.fmt)}
+      </Typography>
+      {d && (
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: '6px', mb: '12px' }}>
+          <Box component="span" sx={{ fontFamily: T.mo, fontSize: 11.5, fontWeight: 600, color: d.positive ? TT_UP : TT_DOWN }}>
+            {d.positive ? '▲' : '▼'} {d.text}
+          </Box>
+          {/* Label fix (2026-07-22) — this was hardcoded "vs Last Year" always, which is wrong
+              for Occupancy % (metric.budget: true, its `ly` slot holds the Budget target, not a
+              real prior-year value) — contradicted the card's own "vs 2026 Budget Target"
+              caption directly below it. Now matches whichever basis `d`'s `ly` actually came from. */}
+          <Typography component="span" sx={{ fontSize: 10, color: TT_SECONDARY }}>
+            {metric.budget ? 'vs 2026 Budget Target' : 'vs Last Year'}
+          </Typography>
+        </Box>
+      )}
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: '7px', borderTop: '0.5px solid rgba(31,26,20,0.25)', pt: '10px' }}>
+        {detail.breakdown.map((row) => (
+          <Box key={row.label} sx={{ display: 'flex', justifyContent: 'space-between', gap: '14px' }}>
+            <Typography sx={{ fontSize: 10, color: TT_SECONDARY, flexShrink: 0 }}>{row.label}</Typography>
+            {/* Wrapping fix (2026-07-22) — `whiteSpace: nowrap` was fine for short $-value rows
+                (Room Revenue/Nights) but forced long descriptive text (Occupancy %'s "Basis" row,
+                "Full-year 2026, all periods — not period-filterable") onto one line, overflowing
+                the tooltip box instead of wrapping. Removed nowrap + right-aligned the wrap so
+                short values still read as a single line naturally, long ones wrap cleanly. */}
+            <Typography sx={{ fontFamily: T.mo, fontSize: 10.5, color: TT_EMPHASIS, fontWeight: 500, textAlign: 'right' }}>{row.value}</Typography>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  )
+}
+
+function KpiCard({
+  label, metric, caption, displayValue, comparisons,
+}: {
+  label: string
+  metric: KpiMetric
+  caption: string
+  // Full Year OTB override (2026-07-22) — when set, this replaces metric.v as the bold headline
+  // number. metric itself stays the real actualized figure throughout (RAG coloring and the
+  // detail tooltip's "Actualized" primary both still read metric.v/metric.ly untouched) — only
+  // the visible big number swaps, so the tooltip's "Actualized: $X" line never contradicts what
+  // metric actually holds.
+  displayValue?: number
+  // Full Year dual-comparison override (2026-07-22) — when set, replaces the single Variance/
+  // caption line with one row per entry (e.g. "vs Last Year" and "vs Budget" both shown at once).
+  // Omitted (undefined) for every other card/period, which keep today's single-comparison line.
+  comparisons?: { label: string; v: number; ly: number }[]
+}) {
+  // RAG basis (2026-07-22 fix) — when `comparisons` is set (Full Year's dual-comparison mode),
+  // the card's headline is the OTB figure, so its health verdict should read OTB-vs-Budget too,
+  // not the original actualized-vs-LY pair still sitting in `metric`. Falls back to `metric`
+  // itself (unchanged behavior) for every other card/period, which never pass `comparisons`.
+  const budgetComparison = comparisons?.find((c) => c.label === 'vs Budget')
+  const rag = ragFromYoyPct(yoyPct(budgetComparison ?? metric))
   const s = RAG_STYLES[rag]
+  const shownValue = displayValue ?? metric.v
+  const tooltipContent = metric.tooltipDetail
+    ? <DetailTooltip metric={metric} />
+    : metric.tooltip
+      ? <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>{metric.tooltip.map((line, idx) => <span key={idx}>{line}</span>)}</Box>
+      : null
   // Hover-area fix (2026-07-17) — the tooltip used to be wrapped around only the small info icon,
   // so a user had to hit that few-pixel target to see it. MuiTooltip now wraps the whole card
   // (below); the icon stays as a visual affordance only, no longer its own separate hover target.
@@ -155,42 +258,58 @@ function KpiCard({ label, metric, caption }: { label: string; metric: KpiMetric;
         <Typography sx={{ fontFamily: T.sa, fontSize: 8.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.mu }}>
           {label}
         </Typography>
-        {metric.tooltip && <InfoOutlinedIcon sx={{ fontSize: 12, color: T.mu }} />}
+        {tooltipContent && <InfoOutlinedIcon sx={{ fontSize: 12, color: T.mu }} />}
       </Box>
       <Typography sx={{ fontFamily: T.se, fontSize: 33, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: s.valueColor, mb: '8px', textShadow: '0 1px 0 rgba(255,255,255,.85), 0 2px 4px rgba(31,26,20,.22)' }}>
-        {fmtK(metric.v, metric.fmt)}
+        {fmtK(shownValue, metric.fmt)}
       </Typography>
-      <Box sx={{ fontFamily: T.sa, fontSize: 10.5, color: T.mu, display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-        <Variance metric={metric} />
-        {/* Budget-basis tag (2026-07-22) — this card's comparator is a Budget target, not last
-            year's actual, unlike its three neighbors. A plain "{caption}" here used to look
-            identical in style to their "vs last year" text, inviting the misread that all four
-            cards share one comparison basis. The distinct pill (same convention as the app's
-            existing "caveat"/tag chips) makes that basis visually unmistakable at a glance. */}
-        {metric.budget
-          ? (
-            <Box
-              component="span"
-              sx={{
-                fontSize: 8, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                px: '7px', py: '2px', borderRadius: '20px', lineHeight: 1.6,
-                bgcolor: '#FDF3E4', color: '#8A5A00', border: '1px solid #E8B84B',
-              }}
-            >
-              Budget
-            </Box>
-          )
-          : null}
-        {caption}
+      <Box sx={{ fontFamily: T.sa, fontSize: 10.5, color: T.mu, display: 'flex', flexDirection: comparisons ? 'column' : 'row', alignItems: comparisons ? 'flex-start' : 'center', gap: comparisons ? '4px' : '6px', flexWrap: 'wrap' }}>
+        {comparisons
+          ? comparisons.map((c) => {
+              const d = budgetVariance({ v: c.v, ly: c.ly })
+              return d && (
+                <Box key={c.label} sx={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <Box component="span" sx={{ fontFamily: T.mo, fontWeight: 600, color: d.positive ? T.rg : T.rr }}>
+                    {d.positive ? '▲' : '▼'} {d.text}
+                  </Box>
+                  {c.label}
+                </Box>
+              )
+            })
+          : (<><Variance metric={metric} /> {caption}</>)}
       </Box>
       <Box sx={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '3px', bgcolor: s.barColor }} />
     </Box>
   )
-  return metric.tooltip
+  return tooltipContent
     ? (
       <MuiTooltip
-        title={<Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 260 }}>{metric.tooltip.map((line, idx) => <span key={idx}>{line}</span>)}</Box>}
+        title={tooltipContent}
         arrow
+        // Background (2026-07-22d, final) — swapped from T.dk to a dedicated warm grey #8C7550.
+        // T.dk matched the Narrative panel directly below the KPI row exactly, so a tooltip
+        // opening there was nearly indistinguishable from the panel's own content behind it.
+        // #8C7550 clears the WCAG 3:1 UI-boundary threshold against BOTH surfaces the tooltip can
+        // appear over: 3.53:1 vs T.dk (#2A2318, the panel) and 4.07:1 vs T.cd (#FAF6EC, the light
+        // card fill) — found by scanning the warm-hue-ratio scale rather than guessing (an
+        // earlier candidate, #7A6E5E, cleared the SAME outer check but turned out to sit in a
+        // mid-luminance zone that broke every one of the tooltip's own text colors — see
+        // DetailTooltip's TT_EMPHASIS/TT_SECONDARY/TT_UP/TT_DOWN, a text palette rebuilt from
+        // scratch and verified against #8C7550 specifically, not reused from the old T.dk design).
+        // Border removed (2026-07-22d) — the amber border from the 07-22b fix is now nearly
+        // invisible here (1.66:1, amber-on-amber) since this background is itself warm/amber-
+        // toned; it was only load-bearing back when the fill matched the panel exactly. The fill
+        // color itself now does that job, so the border was dropped rather than kept as
+        // barely-visible decoration.
+        slotProps={{
+          tooltip: {
+            sx: {
+              bgcolor: '#8C7550', borderRadius: '10px', p: '14px 16px',
+              boxShadow: '0 18px 40px rgba(0,0,0,.35)',
+            },
+          },
+          arrow: { sx: { color: '#8C7550' } },
+        }}
       >
         {card}
       </MuiTooltip>
@@ -268,6 +387,9 @@ export default function SalesExecutiveSummaryDesign({
     ? 'All Properties'
     : PROPERTY_OPTIONS.find((p) => p.value === filters.property)?.label ?? filters.property
   const periodLabel = filters.period === 'm' ? `Month to date · ${filters.year}` : filters.period === 'y' ? `Year to date · ${filters.year}` : `Full year · ${filters.year}`
+  // Full Year OTB redefinition (2026-07-22) — gates the Room Revenue/Room Nights Sold KpiCard
+  // overrides below; see their usage for what changes and why.
+  const isFullYear = filters.period === 'a'
 
   // "Data as at" — whichever section resolves first (they all share the same server clock at
   // request time, so once more than one has landed they read identically; never crashes if the
@@ -560,15 +682,45 @@ export default function SalesExecutiveSummaryDesign({
                 src/components/views/ExecSummaryView.tsx's roomRevenueActualized (occ.rev is
                 actualized-stays-only; Agent Room Revenue elsewhere includes forward-confirmed
                 bookings). */}
+            {/* Full Year redefinition (2026-07-22) — for Room Revenue/Room Nights Sold ONLY, and
+                ONLY when Full Year is selected: headline swaps from actualized-to-date to the OTB
+                (on-the-books) total, shown against BOTH vs-Last-Year and vs-Budget in one card.
+                MTD/YTD are completely untouched (isFullYear false → displayValue/comparisons are
+                both undefined → KpiCard falls back to exactly today's single-line behavior).
+                Deliberately does NOT touch KP_BASE.occ.rev/occ.nights themselves — those stay
+                actualized-only so ExecSummaryView's Occupancy tab (which reuses them, unaffected
+                by this page's Full Year toggle) keeps its own documented "actualized, not
+                full-year" behavior exactly as before. New pace.budgetFullYear/budgetFullYearNights
+                fields carry the OTB + Budget-target basis instead — see route.ts. */}
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', mb: '16px' }}>
-              <KpiCard label="Room Revenue (Actualized)" metric={kpisData.KP_BASE.occ.rev} caption="vs last year" />
-              <KpiCard label="Room Nights Sold" metric={kpisData.KP_BASE.occ.nights} caption="vs last year" />
-              {/* caption reads "vs Budget", not "vs last year" — Occupancy % has no real prior-year
-                  capacity query to compare against (see ragFromYoyPct's comment above), but as of
-                  2026-07-16 kp.occ.occPct.ly now carries a real Budget Occupancy % target instead
-                  (budgetRns ÷ available room nights, same derivation as the Actual side), so this
-                  card's badge is a genuine Budget variance, not a fabricated YoY one. */}
-              <KpiCard label="Occupancy %" metric={kpisData.KP_BASE.occ.occPct} caption="vs Budget" />
+              <KpiCard
+                label={isFullYear ? 'Room Revenue (OTB)' : 'Room Revenue (Actualized)'}
+                metric={kpisData.KP_BASE.occ.rev}
+                caption="vs last year"
+                displayValue={isFullYear ? kpisData.KP_BASE.pace.budgetFullYear.v : undefined}
+                comparisons={isFullYear ? [
+                  { label: 'vs Last Year', v: kpisData.KP_BASE.pace.budgetFullYear.v, ly: kpisData.KP_BASE.occ.rev.ly ?? 0 },
+                  { label: 'vs Budget', v: kpisData.KP_BASE.pace.budgetFullYear.v, ly: kpisData.KP_BASE.pace.budgetFullYear.ly ?? 0 },
+                ] : undefined}
+              />
+              <KpiCard
+                label={isFullYear ? 'Room Nights Sold (OTB)' : 'Room Nights Sold'}
+                metric={kpisData.KP_BASE.occ.nights}
+                caption="vs last year"
+                displayValue={isFullYear ? kpisData.KP_BASE.pace.budgetFullYearNights.v : undefined}
+                comparisons={isFullYear ? [
+                  { label: 'vs Last Year', v: kpisData.KP_BASE.pace.budgetFullYearNights.v, ly: kpisData.KP_BASE.occ.nights.ly ?? 0 },
+                  { label: 'vs Budget', v: kpisData.KP_BASE.pace.budgetFullYearNights.v, ly: kpisData.KP_BASE.pace.budgetFullYearNights.ly ?? 0 },
+                ] : undefined}
+              />
+              {/* Occupancy % has no real prior-year capacity query to compare against (see
+                  ragFromYoyPct's comment above), but as of 2026-07-16 kp.occ.occPct.ly carries a
+                  real Budget Occupancy % target instead (budgetRns ÷ available room nights, same
+                  derivation as the Actual side). Caption (2026-07-22, simplified) now says so
+                  explicitly in one unambiguous line — "vs 2026 Budget Target" — rather than the
+                  earlier badge+"vs Budget" pairing, which read as redundant ("Budget vs Budget")
+                  without being any clearer about WHICH year's target this is. */}
+              <KpiCard label="Occupancy %" metric={kpisData.KP_BASE.occ.occPct} caption="vs 2026 Budget Target" />
               <KpiCard label="ADR" metric={kpisData.KP_BASE.occ.adr} caption="vs last year" />
             </Box>
 

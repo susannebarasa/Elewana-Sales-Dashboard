@@ -155,6 +155,21 @@ export interface KpiMetric {
   // explanation of why the MTD/YTD/Full Year toggle does or doesn't move the number. Omitted for
   // cards where the headline value is self-explanatory.
   tooltip?: string[]
+  // Structured tooltip content (2026-07-22) — additive sibling to `tooltip` above, for consumers
+  // that want a styled "detail card" popup (header + primary figure + breakdown rows) instead of
+  // flat text lines. `tooltip` is left untouched/unremoved so existing generic renderers (KpiRow)
+  // keep working exactly as before for any view that hasn't opted into this richer format.
+  tooltipDetail?: {
+    header: string
+    breakdown: { label: string; value: string }[]
+    // Same-elapsed-basis LY actual (2026-07-22 fix), same units as `v` — DetailTooltip's
+    // "Actualized vs Last Year" row uses this instead of the card's own `ly` whenever present, so
+    // the tooltip's comparison stays apples-to-apples (partial-year actual vs the SAME partial
+    // window last year) even when the card itself is in Full Year mode (where `ly` becomes last
+    // year's complete 12 months — correct for the card's OTB-vs-LY row, wrong for this one).
+    // Omitted (falls back to `metric.ly`) for any tooltipDetail that doesn't need this distinction.
+    actualizedLy?: number
+  }
 }
 
 export interface KpiBase {
@@ -165,6 +180,7 @@ export interface KpiBase {
     budgetMtd: KpiMetric
     budgetYtd: KpiMetric
     budgetFullYear: KpiMetric
+    budgetFullYearNights: KpiMetric
     lead: KpiMetric
   }
   occ: {
